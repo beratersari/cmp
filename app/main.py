@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends
 from app.database import engine, Base, SessionLocal, run_sqlite_migrations
-from app.api import auth, dependencies, problems, leaderboards
+from app.api import auth, dependencies, problems, leaderboards, users
 from app.models.user import UserRole
 from app.services.user_service import UserService
 from app.mock_data import seed_mock_data
@@ -57,6 +57,7 @@ def startup_create_dummy_admin():
 app.include_router(auth.router)
 app.include_router(problems.router)
 app.include_router(leaderboards.router)
+app.include_router(users.router)
 
 @app.get("/", tags=["Health Check"], summary="Check if the API is running")
 def root():

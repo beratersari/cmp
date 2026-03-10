@@ -17,6 +17,7 @@ SUBMISSION_TABLE_NAME = "submissions"
 TAG_TABLE_NAME = "tags"
 PROBLEM_TAG_TABLE_NAME = "problem_tags"
 EDITORIAL_TABLE_NAME = "editorials"
+USER_FOLLOWS_TABLE_NAME = "user_follows"
 
 
 def add_column_if_missing(connection, table_name: str, column_name: str, column_sql: str):
@@ -39,6 +40,7 @@ def run_sqlite_migrations(engine_override=None):
         add_column_if_missing(connection, PROBLEM_TABLE_NAME, "created_by", "TEXT")
         add_column_if_missing(connection, PROBLEM_TABLE_NAME, "updated_by", "TEXT")
         add_column_if_missing(connection, PROBLEM_TABLE_NAME, "update_time", "DATETIME")
+        add_column_if_missing(connection, PROBLEM_TABLE_NAME, "difficulty", "INTEGER NOT NULL DEFAULT 5")
 
         # User table columns
         add_column_if_missing(connection, USER_TABLE_NAME, "is_active", "BOOLEAN NOT NULL DEFAULT 1")
@@ -103,6 +105,39 @@ def run_sqlite_migrations(engine_override=None):
                 updated_by TEXT,
                 update_time DATETIME,
                 FOREIGN KEY(problem_id) REFERENCES problems(id)
+            )
+            """
+        ))
+
+        # Create educations table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS educations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                institution TEXT NOT NULL,
+                degree TEXT NOT NULL,
+                field_of_study TEXT,
+                start_year INTEGER NOT NULL,
+                end_year INTEGER,
+                description TEXT,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Create user follows table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS user_follows (
+                follower_id INTEGER NOT NULL,
+                followed_id INTEGER NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (follower_id, followed_id),
+                FOREIGN KEY(follower_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(followed_id) REFERENCES users(id) ON DELETE CASCADE
             )
             """
         ))

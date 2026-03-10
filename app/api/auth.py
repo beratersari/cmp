@@ -1,10 +1,13 @@
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, status, Query
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.schemas import UserCreate, UserOut, Token, LoginRequest, UserRegister, UserListOut, UserActiveUpdate
+from app.schemas import (
+    UserCreate, UserOut, Token, LoginRequest, UserRegister, UserListOut, 
+    UserActiveUpdate, PaginatedResponse, EducationCreate, EducationUpdate, EducationOut
+)
 from app.services.user_service import UserService
-from app.api.dependencies import RoleChecker
+from app.api.dependencies import RoleChecker, get_current_user
 from app.models.user import UserRole
 
 router = APIRouter(
@@ -40,19 +43,31 @@ def register(user_register: UserRegister, db: Session = Depends(get_db)):
 
 @router.get(
     "/admin/users",
-    response_model=list[UserListOut],
+    response_model=PaginatedResponse[UserListOut],
     dependencies=[Depends(RoleChecker([UserRole.ADMIN]))],
     summary="List all users (admin-only)",
     description="""
-    Retrieve all users in the system.
+    Retrieve all users in the system with pagination and search support.
 
     ### Authorization:
     This endpoint is restricted to **admins only**.
+
+    ### Pagination:
+    - Use `page` and `page_size` query parameters to control pagination.
+    - Default: page=1, page_size=20
+
+    ### Search:
+    - Use `search` query parameter to search by username or email (case-insensitive).
     """
 )
-def list_users(db: Session = Depends(get_db)):
+def list_users(
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    search: str | None = Query(default=None, description="Search by username or email")
+):
     user_service = UserService(db)
-    return user_service.list_users()
+    return user_service.list_users(page=page, page_size=page_size, search=search)
 
 @router.post(
     "/admin/create-user",
@@ -126,3 +141,68 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
     # Convert OAuth2PasswordRequestForm to LoginRequest for the service layer
     login_request = LoginRequest(username=form_data.username, password=form_data.password)
     return user_service.authenticate_user(login_request)
+
+
+# Education endpoints
+@router.post(
+    "/users/{user_id}/education",
+    response_model=EducationOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add education entry for a user",
+    description="""
+    Add a new education entry for a user.
+    
+    ### Authorization:
+    - Users can add education entries for themselves.
+    - Admins can add education entries for any user.
+    """
+)
+def add_education(
+    user_id: int,
+    education_create: EducationCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    user_service = UserService(db)
+    return user_service.add_education(user_id, education_create, current_user)
+
+@router.put(
+    "/users/education/{education_id}",
+    response_model=EducationOut,
+    summary="Update an education entry",
+    description="""
+    Update an existing education entry.
+    
+    ### Authorization:
+    - Users can update their own education entries.
+    - Admins can update any user's education entries.
+    """
+)
+def update_education(
+    education_id: int,
+    education_update: EducationUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    user_service = UserService(db)
+    return user_service.update_education(education_id, education_update, current_user)
+
+@router.delete(
+    "/users/education/{education_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete an education entry",
+    description="""
+    Delete an education entry.
+    
+    ### Authorization:
+    - Users can delete their own education entries.
+    - Admins can delete any user's education entries.
+    """
+)
+def delete_education(
+    education_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    user_service = UserService(db)
+    user_service.delete_education(education_id, current_user)

@@ -1,3 +1,4 @@
+from typing import Optional
 from fastapi import HTTPException, status
 from sqlalchemy.orm import Session
 from app.repositories.problem_repository import ProblemRepository
@@ -13,6 +14,7 @@ from app.schemas import (
     ProblemSubmissionStatsOut,
     EditorialCreate,
     EditorialUpdate,
+    TestcaseCreate,
 )
 from app.models.user import UserRole
 from app.models.problem import SubmissionStatus
@@ -35,30 +37,46 @@ class ProblemService:
         except ValueError as exc:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
-    def list_problems(self, current_user=None, tag: str | None = None):
-        problems = (
-            self.problem_repo.list_problems_by_tag(tag)
-            if tag
-            else self.problem_repo.list_problems()
-        )
+    def list_problems(self, current_user=None, tag: str | None = None, page: int = 1, page_size: int = 20, search: Optional[str] = None):
+        skip = (page - 1) * page_size
+        
+        # Get problems with pagination
+        if tag:
+            problems, total = self.problem_repo.list_problems_by_tag(tag, skip=skip, limit=page_size)
+        else:
+            problems, total = self.problem_repo.list_problems(skip=skip, limit=page_size, search=search)
+        
         # Filter for normal users or unauthenticated users
         if not current_user or current_user.role == UserRole.USER:
-            return [p for p in problems if p.is_published and p.is_public]
-        
-        # Admins see everything
-        if current_user.role == UserRole.ADMIN:
-            return self._serialize_problems(problems)
-            
-        # Creators see public published problems, their own problems, and problems they are allowed to see
-        if current_user.role == UserRole.CREATOR:
-            visible = [
+            filtered = [p for p in problems if p.is_published and p.is_public]
+        elif current_user.role == UserRole.ADMIN:
+            # Admins see everything
+            filtered = problems
+        elif current_user.role == UserRole.CREATOR:
+            # Creators see public published problems, their own problems, and problems they are allowed to see
+            filtered = [
                 p for p in problems 
                 if (p.is_published and p.is_public) or 
                    p.owner_id == current_user.id or 
                    current_user in p.allowed_users
             ]
-            return self._serialize_problems(visible)
-        return []
+        else:
+            filtered = []
+        
+        # Calculate pagination info
+        pages = (total + page_size - 1) // page_size
+        has_next = page < pages
+        has_prev = page > 1
+        
+        return {
+            "items": self._serialize_problems(filtered),
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+            "has_next": has_next,
+            "has_prev": has_prev
+        }
 
     def get_problem(self, problem_id: int, current_user=None):
         problem = self.problem_repo.get_problem_by_id(problem_id)
@@ -150,6 +168,28 @@ class ProblemService:
         self.check_edit_permission(problem, current_user)
         self.problem_repo.delete_problem(problem)
 
+    def add_testcase(self, problem_id: int, testcase_create: TestcaseCreate, current_user):
+        problem = self.get_problem(problem_id, current_user)
+        self.check_edit_permission(problem, current_user)
+        return self.problem_repo.add_testcase_to_problem(problem, testcase_create, current_user.username)
+
+    def delete_testcase(self, problem_id: int, testcase_id: int, current_user):
+        problem = self.get_problem(problem_id, current_user)
+        self.check_edit_permission(problem, current_user)
+
+        testcase = self.problem_repo.get_testcase_by_id(testcase_id)
+        if not testcase:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Testcase not found"
+            )
+        if testcase.problem_id != problem_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Testcase does not belong to this problem"
+            )
+        self.problem_repo.delete_testcase(testcase, problem, current_user.username)
+
     def create_submission(self, problem_id: int, submission_create: SubmissionCreate, user_id: int, username: str, current_user):
         # This ensures the user can see the problem before submitting
         self.get_problem(problem_id, current_user)
@@ -213,9 +253,7 @@ class ProblemService:
         return grouped_results
 
     def _serialize_problems(self, problems):
-        for problem in problems:
-            problem.allowed_user_ids = [u.id for u in problem.allowed_users]
-            problem.tags = [t.name for t in problem.tags]
+        # The model now has computed properties for tags and allowed_user_ids
         return problems
 
     def _problem_to_dict(self, problem):
@@ -224,10 +262,11 @@ class ProblemService:
             "title": problem.title,
             "description": problem.description,
             "constraints": problem.constraints,
+            "difficulty": problem.difficulty,
             "testcases": [
                 {"input": tc.input, "output": tc.output} for tc in problem.testcases
             ],
-            "tags": [t.name for t in problem.tags],
+            "tags": [t.name for t in problem._tags],
             "is_published": problem.is_published,
             "is_public": problem.is_public,
             "owner_id": problem.owner_id,
@@ -248,8 +287,24 @@ class ProblemService:
         stats.sort(key=lambda item: item.problem_count, reverse=True)
         return stats
 
-    def list_tags(self):
-        return self.problem_repo.list_tags()
+    def list_tags(self, page: int = 1, page_size: int = 20, search: Optional[str] = None):
+        skip = (page - 1) * page_size
+        tags, total = self.problem_repo.list_tags(search=search, skip=skip, limit=page_size)
+        
+        # Calculate pagination info
+        pages = (total + page_size - 1) // page_size
+        has_next = page < pages
+        has_prev = page > 1
+        
+        return {
+            "items": tags,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+            "has_next": has_next,
+            "has_prev": has_prev
+        }
 
     def create_tag(self, tag_name: str, current_user):
         existing = self.problem_repo.get_tag_by_name(tag_name)
@@ -258,7 +313,7 @@ class ProblemService:
         return self.problem_repo.create_tag(tag_name, created_by=current_user.username)
 
     def problem_submission_stats(self, current_user):
-        problems = self.problem_repo.list_problems()
+        problems, _ = self.problem_repo.list_problems()
         submissions = self.problem_repo.list_all_submissions()
         counts = {}
         for submission in submissions:

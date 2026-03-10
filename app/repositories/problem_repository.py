@@ -1,7 +1,9 @@
+from typing import Optional
+from datetime import datetime
 from sqlalchemy.orm import Session
 from app.models.problem import Problem, Testcase, Submission, Tag, Editorial
 from app.models.user import User
-from app.schemas import ProblemCreate, ProblemUpdate, SubmissionCreate, SubmissionUpdate, EditorialCreate, EditorialUpdate
+from app.schemas import ProblemCreate, ProblemUpdate, SubmissionCreate, SubmissionUpdate, EditorialCreate, EditorialUpdate, TestcaseCreate
 
 class ProblemRepository:
     def __init__(self, db: Session):
@@ -12,6 +14,7 @@ class ProblemRepository:
             title=problem_create.title,
             description=problem_create.description,
             constraints=problem_create.constraints,
+            difficulty=problem_create.difficulty,
             is_published=problem_create.is_published,
             is_public=problem_create.is_public,
             owner_id=owner_id,
@@ -30,7 +33,7 @@ class ProblemRepository:
             missing = [name for name in problem_create.tags if name not in existing_names]
             if missing:
                 raise ValueError(f"Tags not found: {', '.join(missing)}")
-            problem.tags = tags
+            problem._tags = tags
 
         self.db.commit()
         self.db.refresh(problem)
@@ -42,16 +45,36 @@ class ProblemRepository:
     def get_problem_by_title(self, title: str):
         return self.db.query(Problem).filter(Problem.title == title).first()
 
-    def list_problems(self):
-        return self.db.query(Problem).all()
+    def list_problems(self, skip: int = 0, limit: int = 100, search: Optional[str] = None):
+        query = self.db.query(Problem)
+        if search:
+            query = query.filter(
+                (Problem.title.ilike(f"%{search}%")) |
+                (Problem.description.ilike(f"%{search}%"))
+            )
+        total = query.count()
+        problems = query.offset(skip).limit(limit).all()
+        return problems, total
 
-    def list_problems_by_tag(self, tag_name: str):
-        return (
+    def list_problems_created_in_date_range(self, start_date: datetime, end_date: datetime, skip: int = 0, limit: int = 100):
+        query = (
             self.db.query(Problem)
-            .join(Problem.tags)
-            .filter(Tag.name == tag_name)
-            .all()
+            .filter(Problem.created_at >= start_date)
+            .filter(Problem.created_at <= end_date)
         )
+        total = query.count()
+        problems = query.offset(skip).limit(limit).all()
+        return problems, total
+
+    def list_problems_by_tag(self, tag_name: str, skip: int = 0, limit: int = 100):
+        query = (
+            self.db.query(Problem)
+            .join(Problem._tags)
+            .filter(Tag.name == tag_name)
+        )
+        total = query.count()
+        problems = query.offset(skip).limit(limit).all()
+        return problems, total
 
     def get_tag_by_name(self, name: str):
         return self.db.query(Tag).filter(Tag.name == name).first()
@@ -59,8 +82,13 @@ class ProblemRepository:
     def get_tags_by_names(self, names: list[str]):
         return self.db.query(Tag).filter(Tag.name.in_(names)).all()
 
-    def list_tags(self):
-        return self.db.query(Tag).all()
+    def list_tags(self, search: Optional[str] = None, skip: int = 0, limit: int = 100):
+        query = self.db.query(Tag)
+        if search:
+            query = query.filter(Tag.name.ilike(f"%{search}%"))
+        total = query.count()
+        tags = query.offset(skip).limit(limit).all()
+        return tags, total
 
     def create_tag(self, name: str, created_by: str):
         tag = Tag(name=name, created_by=created_by, updated_by=created_by)
@@ -70,7 +98,7 @@ class ProblemRepository:
         return tag
 
     def add_tags_to_problem(self, problem: Problem, tags: list[Tag], updated_by: str):
-        problem.tags = tags
+        problem._tags = tags
         problem.updated_by = updated_by
         self.db.commit()
         self.db.refresh(problem)
@@ -83,6 +111,8 @@ class ProblemRepository:
             problem.description = problem_update.description
         if problem_update.constraints is not None:
             problem.constraints = problem_update.constraints
+        if problem_update.difficulty is not None:
+            problem.difficulty = problem_update.difficulty
         if problem_update.is_published is not None:
             problem.is_published = problem_update.is_published
         if problem_update.is_public is not None:
@@ -97,11 +127,31 @@ class ProblemRepository:
             missing = [name for name in problem_update.tags if name not in existing_names]
             if missing:
                 raise ValueError(f"Tags not found: {', '.join(missing)}")
-            problem.tags = tags
+            problem._tags = tags
         problem.updated_by = updated_by
         self.db.commit()
         self.db.refresh(problem)
         return problem
+
+    def get_testcase_by_id(self, testcase_id: int):
+        return self.db.query(Testcase).filter(Testcase.id == testcase_id).first()
+
+    def add_testcase_to_problem(self, problem: Problem, testcase_create: TestcaseCreate, updated_by: str):
+        testcase = Testcase(
+            problem_id=problem.id,
+            input=testcase_create.input,
+            output=testcase_create.output
+        )
+        self.db.add(testcase)
+        problem.updated_by = updated_by
+        self.db.commit()
+        self.db.refresh(testcase)
+        return testcase
+
+    def delete_testcase(self, testcase: Testcase, problem: Problem, updated_by: str):
+        self.db.delete(testcase)
+        problem.updated_by = updated_by
+        self.db.commit()
 
     def add_allowed_user(self, problem: Problem, user: User):
         if user not in problem.allowed_users:
@@ -142,6 +192,35 @@ class ProblemRepository:
 
     def list_all_submissions(self):
         return self.db.query(Submission).all()
+
+    def list_submissions_in_date_range(self, start_date: datetime, end_date: datetime):
+        return (
+            self.db.query(Submission)
+            .filter(Submission.submission_time >= start_date)
+            .filter(Submission.submission_time <= end_date)
+            .all()
+        )
+
+    def get_user_submissions_in_date_range(self, user_id: int, start_date: datetime, end_date: datetime):
+        """Get all submissions for a user within a date range."""
+        return (
+            self.db.query(Submission)
+            .filter(Submission.user_id == user_id)
+            .filter(Submission.submission_time >= start_date)
+            .filter(Submission.submission_time <= end_date)
+            .order_by(Submission.submission_time.asc())
+            .all()
+        )
+
+    def get_user_accepted_submissions(self, user_id: int):
+        """Get all accepted submissions for a user ordered by date."""
+        return (
+            self.db.query(Submission)
+            .filter(Submission.user_id == user_id)
+            .filter(Submission.status == "ACCEPTED")
+            .order_by(Submission.submission_time.asc())
+            .all()
+        )
 
     def get_submission_by_id(self, submission_id: int):
         return self.db.query(Submission).filter(Submission.id == submission_id).first()

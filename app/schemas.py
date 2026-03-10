@@ -1,8 +1,21 @@
-from pydantic import BaseModel, EmailStr, Field
-from typing import Optional, List
+from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
+from typing import Optional, List, Generic, TypeVar
 from datetime import datetime
 from app.models.user import UserRole
 from app.models.problem import SubmissionStatus
+
+T = TypeVar('T')
+
+class PaginatedResponse(BaseModel, Generic[T]):
+    items: List[T] = Field(..., description="List of items for the current page")
+    total: int = Field(..., description="Total number of items")
+    page: int = Field(..., description="Current page number (1-indexed)")
+    page_size: int = Field(..., description="Number of items per page")
+    pages: int = Field(..., description="Total number of pages")
+    has_next: bool = Field(..., description="Whether there is a next page")
+    has_prev: bool = Field(..., description="Whether there is a previous page")
+
+    model_config = ConfigDict(from_attributes=True)
 
 class UserBase(BaseModel):
     username: str = Field(..., description="The unique username of the user", example="john_doe")
@@ -10,13 +23,42 @@ class UserBase(BaseModel):
     role: UserRole = Field(default=UserRole.USER, description="The role of the user (admin, creator, user)", example="user")
     is_active: bool = Field(default=True, description="Whether the user account is active")
 
+class EducationBase(BaseModel):
+    institution: str = Field(..., description="Name of the educational institution", example="MIT")
+    degree: str = Field(..., description="Degree earned or pursuing", example="Bachelor of Science")
+    field_of_study: Optional[str] = Field(None, description="Field of study or major", example="Computer Science")
+    start_year: int = Field(..., description="Year started", ge=1900, le=2100, example=2020)
+    end_year: Optional[int] = Field(None, description="Year ended (null if currently studying)", ge=1900, le=2100, example=2024)
+    description: Optional[str] = Field(None, description="Additional details about the education")
+
+class EducationCreate(EducationBase):
+    pass
+
+class EducationUpdate(BaseModel):
+    institution: Optional[str] = Field(None, description="Name of the educational institution")
+    degree: Optional[str] = Field(None, description="Degree earned or pursuing")
+    field_of_study: Optional[str] = Field(None, description="Field of study or major")
+    start_year: Optional[int] = Field(None, description="Year started", ge=1900, le=2100)
+    end_year: Optional[int] = Field(None, description="Year ended (null if currently studying)", ge=1900, le=2100)
+    description: Optional[str] = Field(None, description="Additional details about the education")
+
+class EducationOut(EducationBase):
+    id: int = Field(..., description="The unique education entry ID", example=1)
+    user_id: int = Field(..., description="The user ID this education belongs to")
+    created_at: datetime = Field(..., description="When the education entry was created")
+    updated_at: datetime = Field(..., description="When the education entry was last updated")
+
+    model_config = ConfigDict(from_attributes=True)
+
 class UserRegister(BaseModel):
     username: str = Field(..., description="The unique username of the user", example="john_doe")
     email: EmailStr = Field(..., description="The email address of the user", example="john@example.com")
     password: str = Field(..., description="The password for the user, must be at least 8 characters", min_length=8, example="strong_password123")
+    educations: Optional[List[EducationCreate]] = Field(default=None, description="Optional list of education entries")
 
 class UserCreate(UserBase):
     password: str = Field(..., description="The password for the user, must be at least 8 characters", min_length=8, example="strong_password123")
+    educations: Optional[List[EducationCreate]] = Field(default=None, description="Optional list of education entries")
 
 class UserActiveUpdate(BaseModel):
     is_active: bool = Field(..., description="Whether the user is active")
@@ -26,9 +68,11 @@ class UserOut(UserBase):
     created_by: Optional[str] = Field(None, description="The username that created this user")
     updated_by: Optional[str] = Field(None, description="The username that last updated this user")
     update_time: Optional[datetime] = Field(None, description="The last time this user record was updated")
+    educations: List[EducationOut] = Field(default=[], description="List of user's education entries")
+    followers_count: int = Field(0, description="Number of followers")
+    following_count: int = Field(0, description="Number of users this user follows")
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class Token(BaseModel):
     access_token: str = Field(..., description="The generated JWT access token", example="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...")
@@ -46,14 +90,33 @@ class Testcase(BaseModel):
     input: str = Field(..., description="The raw input string for the testcase", example="1 2")
     output: str = Field(..., description="The expected output string for the testcase", example="3")
 
+class TestcaseCreate(BaseModel):
+    input: str = Field(..., description="The raw input string for the testcase", example="1 2")
+    output: str = Field(..., description="The expected output string for the testcase", example="3")
+
+class TestcaseOut(BaseModel):
+    id: int = Field(..., description="The unique testcase identifier", example=1)
+    input: str = Field(..., description="The raw input string for the testcase", example="1 2")
+    output: str = Field(..., description="The expected output string for the testcase", example="3")
+
+    model_config = ConfigDict(from_attributes=True)
+
 class ProblemBase(BaseModel):
     title: str = Field(..., description="The title of the problem", example="Sum of Two Numbers")
     description: str = Field(..., description="The detailed problem description", example="Given two integers, return their sum.")
     constraints: str = Field(..., description="Constraints for the problem", example="1 <= a, b <= 10^9")
+    difficulty: int = Field(..., description="Difficulty level of the problem (1-10)", ge=1, le=10, example=5)
     testcases: List[Testcase] = Field(..., description="List of testcases with input/output pairs")
     tags: List[str] = Field(default=[], description="List of tags applied to this problem")
     is_published: bool = Field(default=False, description="Whether the problem is published and visible to users")
     is_public: bool = Field(default=True, description="Whether the problem is public or private")
+
+    @field_validator("difficulty")
+    @classmethod
+    def validate_difficulty(cls, v: int) -> int:
+        if v < 1 or v > 10:
+            raise ValueError("Difficulty must be between 1 and 10")
+        return v
 
 class ProblemCreate(ProblemBase):
     pass
@@ -62,9 +125,17 @@ class ProblemUpdate(BaseModel):
     title: Optional[str] = Field(None, description="Updated title of the problem", example="Sum of Two Numbers - Updated")
     description: Optional[str] = Field(None, description="Updated problem description")
     constraints: Optional[str] = Field(None, description="Updated constraints")
+    difficulty: Optional[int] = Field(None, description="Updated difficulty level (1-10)", ge=1, le=10)
     testcases: Optional[List[Testcase]] = Field(None, description="Updated list of testcases")
     is_published: Optional[bool] = Field(None, description="Updated published status")
     is_public: Optional[bool] = Field(None, description="Updated public/private status")
+
+    @field_validator("difficulty")
+    @classmethod
+    def validate_difficulty(cls, v: Optional[int]) -> Optional[int]:
+        if v is not None and (v < 1 or v > 10):
+            raise ValueError("Difficulty must be between 1 and 10")
+        return v
 
 class ProblemOut(ProblemBase):
     id: int = Field(..., description="The unique problem identifier", example=1)
@@ -76,8 +147,7 @@ class ProblemOut(ProblemBase):
     created_at: datetime = Field(..., description="The creation timestamp of the problem")
     allowed_user_ids: List[int] = Field(default=[], description="List of user IDs allowed to access/edit if private")
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class SubmissionBase(BaseModel):
     programming_language: str = Field(..., description="The programming language used in the submission", example="python")
@@ -96,6 +166,24 @@ class SubmissionUpdate(BaseModel):
 class UserListOut(UserOut):
     pass
 
+class UserSummaryOut(BaseModel):
+    id: int = Field(..., description="The unique internal ID of the user", example=1)
+    username: str = Field(..., description="The unique username of the user", example="john_doe")
+
+    model_config = ConfigDict(from_attributes=True)
+
+class UserFollowStatsOut(BaseModel):
+    user_id: int = Field(..., description="User ID")
+    username: str = Field(..., description="Username")
+    followers_count: int = Field(..., description="Number of followers")
+    following_count: int = Field(..., description="Number of users this user follows")
+    following: List[UserSummaryOut] = Field(default=[], description="Users this user follows")
+
+class UserFollowersOut(BaseModel):
+    user_id: int = Field(..., description="User ID")
+    username: str = Field(..., description="Username")
+    followers: List[UserSummaryOut] = Field(default=[], description="Followers list")
+
 class TagCreate(BaseModel):
     name: str = Field(..., description="Tag name", example="dp")
 
@@ -106,8 +194,7 @@ class TagOut(BaseModel):
     updated_by: Optional[str] = Field(None, description="The username that last updated the tag")
     update_time: Optional[datetime] = Field(None, description="The last time the tag was updated")
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class LeaderboardEntryOut(BaseModel):
     username: str = Field(..., description="Username")
@@ -141,8 +228,7 @@ class SubmissionOut(SubmissionBase):
     update_time: Optional[datetime] = Field(None, description="The last time the submission was updated")
     submission_time: datetime = Field(..., description="The timestamp when the submission was made")
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
 
 class EditorialBase(BaseModel):
     description: str = Field(..., description="The detailed editorial explanation")
@@ -162,5 +248,26 @@ class EditorialOut(EditorialBase):
     updated_by: Optional[str] = Field(None, description="The username that last updated the editorial")
     update_time: datetime = Field(..., description="The last time the editorial was updated")
 
-    class Config:
-        orm_mode = True
+    model_config = ConfigDict(from_attributes=True)
+
+class SubmissionHistoryEntry(BaseModel):
+    date: str = Field(..., description="Date in YYYY-MM-DD format", example="2024-01-15")
+    submission_count: int = Field(..., description="Number of submissions on this date", example=5)
+
+class UserSubmissionHistoryOut(BaseModel):
+    user_id: int = Field(..., description="User ID")
+    username: str = Field(..., description="Username")
+    start_date: str = Field(..., description="Start date of the range", example="2024-01-01")
+    end_date: str = Field(..., description="End date of the range", example="2024-01-31")
+    daily_submissions: List[SubmissionHistoryEntry] = Field(..., description="Submission count per date")
+    total_submissions: int = Field(..., description="Total submissions in the date range")
+
+class StreakInfo(BaseModel):
+    current_streak: int = Field(..., description="Current consecutive days with accepted submissions")
+    max_streak: int = Field(..., description="Maximum daily streak achieved")
+    last_accepted_date: Optional[str] = Field(None, description="Date of last accepted submission")
+
+class UserStreakOut(BaseModel):
+    user_id: int = Field(..., description="User ID")
+    username: str = Field(..., description="Username")
+    streak_info: StreakInfo = Field(..., description="Streak information")

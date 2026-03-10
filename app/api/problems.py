@@ -17,6 +17,9 @@ from app.schemas import (
     EditorialCreate,
     EditorialUpdate,
     EditorialOut,
+    TestcaseCreate,
+    TestcaseOut,
+    PaginatedResponse,
 )
 from app.services.problem_service import ProblemService
 from app.api.dependencies import RoleChecker, oauth2_scheme, get_current_user
@@ -65,28 +68,35 @@ def create_problem(
 ):
     problem_service = ProblemService(db)
     problem = problem_service.create_problem(problem_create, owner_id=current_user.id, created_by=current_user.username)
-    # Map allowed users to IDs for schema
-    problem.allowed_user_ids = [u.id for u in problem.allowed_users]
-    problem.tags = [t.name for t in problem.tags]
+    # The model now has computed properties for tags and allowed_user_ids
     return problem
 
 @router.get(
     "",
-    response_model=list[ProblemOut],
+    response_model=PaginatedResponse[ProblemOut],
     summary="List all problems (filtered by visibility)",
     description="""
-    Retrieve problems available in the system.
+    Retrieve problems available in the system with pagination and search support.
 
     ### Filtering Logic:
     - **Standard Users/Unauthenticated**: Only see **published AND public** problems.
     - **Creators**: See public published problems, **their own** problems, and problems they are **allowed to access**.
     - **Admins**: See **all** problems.
+
+    ### Pagination:
+    - Use `page` and `page_size` query parameters to control pagination.
+    - Default: page=1, page_size=20
+
+    ### Search:
+    - Use `search` query parameter to search by title or description (case-insensitive).
     """
 )
 def list_problems(
     db: Session = Depends(get_db),
     tag: str | None = Query(default=None, description="Filter problems by tag"),
-    # Use a custom dependency to handle optional token
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    search: str | None = Query(default=None, description="Search by title or description"),
     token: str = Depends(oauth2_scheme)
 ):
     # Manual check for current user because OAuth2PasswordBearer raises 401 if missing
@@ -99,11 +109,8 @@ def list_problems(
             pass
             
     problem_service = ProblemService(db)
-    problems = problem_service.list_problems(current_user, tag=tag)
-    for p in problems:
-        p.allowed_user_ids = [u.id for u in p.allowed_users]
-        p.tags = [t.name for t in p.tags]
-    return problems
+    result = problem_service.list_problems(current_user, tag=tag, page=page, page_size=page_size, search=search)
+    return result
 
 @router.get(
     "/grouped-by-owner",
@@ -155,15 +162,27 @@ def submission_stats(
 
 @router.get(
     "/tags",
-    response_model=list[TagOut],
+    response_model=PaginatedResponse[TagOut],
     summary="List all tags",
     description="""
-    Retrieve all problem tags in the system.
+    Retrieve all problem tags in the system with pagination and search support.
+
+    ### Pagination:
+    - Use `page` and `page_size` query parameters to control pagination.
+    - Default: page=1, page_size=20
+
+    ### Search:
+    - Use `search` query parameter to search by tag name (case-insensitive).
     """
 )
-def list_tags(db: Session = Depends(get_db)):
+def list_tags(
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    search: str | None = Query(default=None, description="Search by tag name")
+):
     problem_service = ProblemService(db)
-    return problem_service.list_tags()
+    return problem_service.list_tags(page=page, page_size=page_size, search=search)
 
 @router.post(
     "/tags",
@@ -208,8 +227,7 @@ def get_problem(
             
     problem_service = ProblemService(db)
     problem = problem_service.get_problem(problem_id, current_user)
-    problem.allowed_user_ids = [u.id for u in problem.allowed_users]
-    problem.tags = [t.name for t in problem.tags]
+    # The model now has computed properties for tags and allowed_user_ids
     return problem
 
 @router.put(
@@ -233,8 +251,7 @@ def update_problem(
 ):
     problem_service = ProblemService(db)
     problem = problem_service.update_problem(problem_id, problem_update, current_user)
-    problem.allowed_user_ids = [u.id for u in problem.allowed_users]
-    problem.tags = [t.name for t in problem.tags]
+    # The model now has computed properties for tags and allowed_user_ids
     return problem
 
 @router.post(
@@ -253,8 +270,7 @@ def add_allowed_user(
 ):
     problem_service = ProblemService(db)
     problem = problem_service.add_user_to_allowed_list(problem_id, username, current_user)
-    problem.allowed_user_ids = [u.id for u in problem.allowed_users]
-    problem.tags = [t.name for t in problem.tags]
+    # The model now has computed properties for tags and allowed_user_ids
     return problem
 
 @router.delete(
@@ -270,8 +286,7 @@ def remove_allowed_user(
 ):
     problem_service = ProblemService(db)
     problem = problem_service.remove_user_from_allowed_list(problem_id, username, current_user)
-    problem.allowed_user_ids = [u.id for u in problem.allowed_users]
-    problem.tags = [t.name for t in problem.tags]
+    # The model now has computed properties for tags and allowed_user_ids
     return problem
 
 @router.delete(
@@ -449,3 +464,48 @@ def delete_editorial(
 ):
     problem_service = ProblemService(db)
     problem_service.delete_editorial(problem_id, current_user)
+
+@router.post(
+    "/{problem_id}/testcases",
+    response_model=TestcaseOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a new testcase to a problem (admin/owner/allowed creator)",
+    description="""
+    Add a new testcase to an existing problem.
+
+    ### Authorization:
+    - **Admins**: Can add testcases to any problem.
+    - **Owners**: Can add testcases to their own problems.
+    - **Allowed Creators**: Can add testcases to private problems if they are in the allowed list.
+    """
+)
+def add_testcase(
+    problem_id: int,
+    testcase_create: TestcaseCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR]))
+):
+    problem_service = ProblemService(db)
+    return problem_service.add_testcase(problem_id, testcase_create, current_user)
+
+@router.delete(
+    "/{problem_id}/testcases/{testcase_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a testcase from a problem (admin/owner/allowed creator)",
+    description="""
+    Delete a specific testcase from a problem.
+
+    ### Authorization:
+    - **Admins**: Can delete testcases from any problem.
+    - **Owners**: Can delete testcases from their own problems.
+    - **Allowed Creators**: Can delete testcases from private problems if they are in the allowed list.
+    """
+)
+def delete_testcase(
+    problem_id: int,
+    testcase_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR]))
+):
+    problem_service = ProblemService(db)
+    problem_service.delete_testcase(problem_id, testcase_id, current_user)
