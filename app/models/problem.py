@@ -120,3 +120,32 @@ class Editorial(Base):
     update_time = Column(DateTime(timezone=True), server_default=func.now())
 
     problem = relationship("Problem", back_populates="editorial")
+
+
+class VoteType(str, enum.Enum):
+    LIKE = "like"
+    DISLIKE = "dislike"
+
+
+class VoteTargetType(str, enum.Enum):
+    PROBLEM = "problem"
+    EDITORIAL = "editorial"
+
+
+class Vote(Base):
+    __tablename__ = "votes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
+    target_id = Column(Integer, nullable=False)  # problem_id or editorial_id
+    target_type = Column(String, nullable=False)  # 'problem' or 'editorial'
+    vote_type = Column(String, nullable=False)  # 'like' or 'dislike'
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+    user = relationship("User", foreign_keys=[user_id])
+
+    __table_args__ = (
+        # Ensure a user can only vote once per target
+        {'sqlite_autoincrement': True},
+    )

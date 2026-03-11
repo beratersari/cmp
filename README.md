@@ -1,14 +1,14 @@
 # Codeforces Clone API
 
-This project provides a FastAPI-based backend for a Codeforces-like platform. It follows a strict **N-Layered Architecture** and includes authentication, role-based authorization, problem management, submission tracking, leaderboards, and user streaks.
+This project provides a FastAPI-based backend for a Codeforces-like platform. It follows a strict **N-Layered Architecture** and includes authentication, role-based authorization, problem management, submission tracking, leaderboards, user streaks, voting, and a forum system.
 
 ## Architecture Overview
 
 - **API Layer** (`app/api`): HTTP routes and Swagger documentation.
-- **Service Layer** (`app/services`): Business logic for users, problems, submissions, and leaderboards.
+- **Service Layer** (`app/services`): Business logic for users, problems, submissions, leaderboards, voting, and forum.
 - **Repository Layer** (`app/repositories`): Database interaction using SQLAlchemy.
-- **Models Layer** (`app/models`): ORM models for users, problems, testcases, submissions, and educations.
-- **Core Layer** (`app/core`): Security utilities and configuration.
+- **Models Layer** (`app/models`): ORM models for users, problems, testcases, submissions, educations, votes, and forum posts/comments.
+- **Core Layer** (`app/core`): Security utilities, logging configuration, and application settings.
 
 ## Requirements
 
@@ -35,6 +35,34 @@ This project includes a lightweight startup migration helper that automatically 
 
 The migration runs automatically on application startup.
 
+### Logging Configuration
+
+The application includes a comprehensive logging system with configurable log levels and colorful console output.
+
+**Log Levels:** `DEBUG`, `INFO`, `WARNING`, `ERROR`, `CRITICAL`
+
+**Configuration (in `app/core/config.py`):**
+```python
+# Set the minimum log level
+LOG_LEVEL = LogLevel.DEBUG  # Shows DEBUG and above
+
+# Enable/disable colored output
+COLORED_LOGS = True
+
+# Enable file logging
+FILE_LOGGING = True
+LOG_FILE = "app.log"
+```
+
+**Color Scheme:**
+- `DEBUG` - Cyan
+- `INFO` - Green
+- `WARNING` - Yellow
+- `ERROR` - Red
+- `CRITICAL` - Magenta
+- Timestamps - Gray
+- Logger names - Blue
+
 ### Mock Data on Startup
 
 On startup, the application creates:
@@ -44,6 +72,7 @@ On startup, the application creates:
 - 50+ submissions (mix of pending and accepted).
 - Accepted submissions for streak testing (consecutive days).
 - Sample editorials for problems.
+- **3 forum posts with 30+ comments and nested replies**.
 
 ## Authentication and Roles
 
@@ -115,6 +144,24 @@ Education can be added during registration or later via dedicated endpoints.
 - `DELETE /problems/{problem_id}` (admin/creator)
 - `GET /problems/grouped-by-owner` (admin/creator)
 
+### Problem Discussions (LeetCode-style)
+- `POST /problems/{problem_id}/discussions` - Create a discussion thread for a problem
+- `GET /problems/{problem_id}/discussions` - List discussions for a problem (paginated)
+- `GET /problems/discussions/{discussion_id}` - Get a discussion with comment tree
+- `PUT /problems/discussions/{discussion_id}` - Update a discussion (author/admin)
+- `DELETE /problems/discussions/{discussion_id}` - Delete a discussion (author/admin)
+- `POST /problems/discussions/{discussion_id}/comments` - Add a comment or reply
+- `GET /problems/discussions/{discussion_id}/comments` - Get discussion comments (tree)
+- `GET /problems/discussion-comments/{comment_id}` - Get a discussion comment
+- `PUT /problems/discussion-comments/{comment_id}` - Update a discussion comment
+- `DELETE /problems/discussion-comments/{comment_id}` - Delete a discussion comment
+
+### Problem Bookmarks
+- `POST /problems/{problem_id}/bookmarks` - Bookmark a problem
+- `DELETE /problems/{problem_id}/bookmarks` - Remove a bookmark
+- `GET /problems/bookmarks` - List your bookmarked problems (paginated)
+- `GET /problems/{problem_id}/bookmarks/me` - Check if a problem is bookmarked
+
 ### Problem Access Control
 - `POST /problems/{problem_id}/allowed-users/{username}` (admin/creator)
 - `DELETE /problems/{problem_id}/allowed-users/{username}` (admin/creator)
@@ -143,6 +190,13 @@ Education can be added during registration or later via dedicated endpoints.
 - `GET /leaderboards/creators/last-30-days?page=1&page_size=20&search=jane` - By problems created in last 30 days
 - `GET /leaderboards/creators/last-year?page=1&page_size=20&search=jane` - By problems created in last year
 
+### Following Leaderboards (Authenticated)
+Leaderboards consisting only of users you follow (plus yourself):
+- `GET /leaderboards/following?page=1&page_size=20` - By accepted submissions
+- `GET /leaderboards/following/last-7-days?page=1&page_size=20` - By accepted submissions in last 7 days
+- `GET /leaderboards/following/last-30-days?page=1&page_size=20` - By accepted submissions in last 30 days
+- `GET /leaderboards/following/last-year?page=1&page_size=20` - By accepted submissions in last year
+
 ### User Submission History
 - `GET /users/me/submission-history?start_date=2024-01-01&end_date=2024-01-31`
   - Returns daily submission counts within date range
@@ -162,6 +216,64 @@ Education can be added during registration or later via dedicated endpoints.
   - **Daily Streak**: Consecutive days with accepted submissions
   - Tracks both current and maximum streaks (current + max)
   - Only ACCEPTED submissions count toward streaks
+
+### Voting (Likes/Dislikes)
+Users can vote on problems and editorials:
+- `POST /problems/{problem_id}/vote` - Cast a like/dislike vote on a problem
+- `GET /problems/{problem_id}/votes` - Get vote statistics for a problem
+- `POST /problems/{problem_id}/editorial/vote` - Cast a like/dislike vote on an editorial
+- `GET /problems/{problem_id}/editorial/votes` - Get vote statistics for an editorial
+- `GET /problems/stats/votes` - Get vote statistics grouped by creator
+- `DELETE /problems/{problem_id}/vote` - Remove your vote from a problem
+- `DELETE /problems/{problem_id}/editorial/vote` - Remove your vote from an editorial
+
+**Vote Types:** `LIKE`, `DISLIKE`
+
+### Forum
+A tree-structured forum system for community discussions:
+
+#### Posts
+- `POST /forum/posts` - Create a new forum post
+- `GET /forum/posts` - List all forum posts (paginated)
+  - Regular users see only published posts
+  - Admins can see all posts including unpublished/deleted
+- `GET /forum/posts/{post_id}` - Get a specific post with all comments (tree structure)
+- `PUT /forum/posts/{post_id}` - Update a post (author or admin only)
+- `DELETE /forum/posts/{post_id}` - Delete a post (soft delete by default)
+- `PUT /forum/posts/{post_id}/publish` - Publish or unpublish a post
+
+#### Comments (Tree Structure)
+- `POST /forum/posts/{post_id}/comments` - Create a comment or reply
+  - Set `parent_id` to reply to an existing comment
+  - Without `parent_id`, creates a top-level comment
+- `GET /forum/posts/{post_id}/comments` - Get all comments in tree structure
+- `GET /forum/comments/{comment_id}` - Get a specific comment
+- `PUT /forum/comments/{comment_id}` - Update a comment (author or admin only)
+- `DELETE /forum/comments/{comment_id}` - Delete a comment (soft delete by default)
+
+#### Emoji Reactions
+Users can react to posts and comments with emoji strings like `:happy:`, `:angry:`, `:sad:`.
+Each user can only have **one reaction per post/comment** (adding a new reaction updates the existing one).
+
+- `GET /forum/emojis` - Get list of valid emoji strings
+- `POST /forum/posts/{post_id}/reactions` - Add/update emoji reaction on a post
+- `GET /forum/posts/{post_id}/reactions` - Get all emoji reactions for a post
+- `GET /forum/posts/{post_id}/reactions/me` - Get current user's reaction on a post
+- `DELETE /forum/posts/{post_id}/reactions` - Remove emoji reaction from a post
+- `POST /forum/comments/{comment_id}/reactions` - Add/update emoji reaction on a comment
+- `GET /forum/comments/{comment_id}/reactions` - Get all emoji reactions for a comment
+- `GET /forum/comments/{comment_id}/reactions/me` - Get current user's reaction on a comment
+- `DELETE /forum/comments/{comment_id}/reactions` - Remove emoji reaction from a comment
+
+**Valid Emojis:** `:happy:`, `:sad:`, `:angry:`, `:laugh:`, `:love:`, `:thumbsup:`, `:thumbsdown:`, `:wow:`, `:cool:`, `:confused:`, `:fire:`, `:rocket:`, `:clap:`, `:thinking:`
+
+**Comment Tree Structure:** Comments support nested replies. Each comment can have replies, which can have their own replies, creating a tree structure. The API returns comments organized hierarchically with a `replies` array for each comment.
+
+**Visibility Rules:**
+- Only published posts can be commented on
+- Users can only edit/delete their own posts/comments
+- Admins can manage all posts/comments
+- Soft-deleted content is hidden from regular users but visible to admins
 
 ### Submission CRUD
 - `POST /problems/{problem_id}/submissions` (authenticated)
@@ -274,5 +386,125 @@ curl -X POST "http://localhost:8000/users/me/follow/2" \
 ### Get Follow Stats
 ```bash
 curl -X GET "http://localhost:8000/users/me/follows" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Create a Forum Post
+```bash
+curl -X POST "http://localhost:8000/forum/posts" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "title": "Tips for Beginners",
+    "content": "Here are some tips for getting started with competitive programming..."
+  }'
+```
+
+### Add a Comment to a Post
+```bash
+curl -X POST "http://localhost:8000/forum/posts/1/comments" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "content": "Great post! Thanks for sharing."
+  }'
+```
+
+### Reply to a Comment (Nested Reply)
+```bash
+curl -X POST "http://localhost:8000/forum/posts/1/comments" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "content": "I agree with your point!",
+    "parent_id": 1
+  }'
+```
+
+### Get Post with Comment Tree
+```bash
+curl -X GET "http://localhost:8000/forum/posts/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Vote on a Problem
+```bash
+curl -X POST "http://localhost:8000/problems/1/vote" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "vote_type": "LIKE"
+  }'
+```
+
+### Create a Problem Discussion
+```bash
+curl -X POST "http://localhost:8000/problems/1/discussions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "title": "My Approach",
+    "content": "Here is how I solved this problem..."
+  }'
+```
+
+### Add a Comment to a Discussion
+```bash
+curl -X POST "http://localhost:8000/problems/discussions/1/comments" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "content": "Interesting solution!",
+    "parent_id": null
+  }'
+```
+
+### Get Discussion with Comment Tree
+```bash
+curl -X GET "http://localhost:8000/problems/discussions/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Add Emoji Reaction to a Post
+```bash
+curl -X POST "http://localhost:8000/forum/posts/1/reactions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "emoji": ":happy:"
+  }'
+```
+
+### Get Emoji Reactions for a Post
+```bash
+curl -X GET "http://localhost:8000/forum/posts/1/reactions" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Add Emoji Reaction to a Comment
+```bash
+curl -X POST "http://localhost:8000/forum/comments/1/reactions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "emoji": ":thumbsup:"
+  }'
+```
+
+### Get Valid Emoji List
+```bash
+curl -X GET "http://localhost:8000/forum/emojis" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get Following Leaderboard
+```bash
+curl -X GET "http://localhost:8000/leaderboards/following?page=1&page_size=10" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get Following Leaderboard (Last 7 Days)
+```bash
+curl -X GET "http://localhost:8000/leaderboards/following/last-7-days?page=1&page_size=10" \
   -H "Authorization: Bearer <token>"
 ```

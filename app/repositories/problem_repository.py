@@ -1,15 +1,21 @@
 from typing import Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
-from app.models.problem import Problem, Testcase, Submission, Tag, Editorial
+from sqlalchemy import func
+from app.models.problem import Problem, Testcase, Submission, Tag, Editorial, Vote
 from app.models.user import User
 from app.schemas import ProblemCreate, ProblemUpdate, SubmissionCreate, SubmissionUpdate, EditorialCreate, EditorialUpdate, TestcaseCreate
+from app.core.config import get_logger
+
+logger = get_logger(__name__)
 
 class ProblemRepository:
     def __init__(self, db: Session):
         self.db = db
+        logger.debug("ProblemRepository initialized")
 
     def create_problem(self, problem_create: ProblemCreate, owner_id: int, created_by: str) -> Problem:
+        logger.debug(f"Creating problem in database: title='{problem_create.title}', owner_id={owner_id}")
         problem = Problem(
             title=problem_create.title,
             description=problem_create.description,
@@ -37,6 +43,7 @@ class ProblemRepository:
 
         self.db.commit()
         self.db.refresh(problem)
+        logger.debug(f"Problem created in database: id={problem.id}, title='{problem.title}'")
         return problem
 
     def get_problem_by_id(self, problem_id: int):
@@ -275,3 +282,93 @@ class ProblemRepository:
     def delete_editorial(self, editorial: Editorial):
         self.db.delete(editorial)
         self.db.commit()
+
+    # Vote-related methods
+    def get_vote(self, user_id: int, target_id: int, target_type: str) -> Optional[Vote]:
+        return self.db.query(Vote).filter(
+            Vote.user_id == user_id,
+            Vote.target_id == target_id,
+            Vote.target_type == target_type
+        ).first()
+
+    def create_or_update_vote(self, user_id: int, target_id: int, target_type: str, vote_type: str) -> Vote:
+        logger.debug(f"Creating/updating vote: user_id={user_id}, target_id={target_id}, target_type={target_type}, vote_type={vote_type}")
+        vote = self.get_vote(user_id, target_id, target_type)
+        if vote:
+            logger.debug(f"Updating existing vote: vote_id={vote.id}, old_type={vote.vote_type}, new_type={vote_type}")
+            vote.vote_type = vote_type
+        else:
+            logger.debug(f"Creating new vote for user_id={user_id}")
+            vote = Vote(
+                user_id=user_id,
+                target_id=target_id,
+                target_type=target_type,
+                vote_type=vote_type
+            )
+            self.db.add(vote)
+        self.db.commit()
+        self.db.refresh(vote)
+        logger.debug(f"Vote saved: vote_id={vote.id}")
+        return vote
+
+    def delete_vote(self, user_id: int, target_id: int, target_type: str) -> bool:
+        vote = self.get_vote(user_id, target_id, target_type)
+        if vote:
+            self.db.delete(vote)
+            self.db.commit()
+            return True
+        return False
+
+    def get_vote_stats(self, target_id: int, target_type: str) -> dict:
+        likes = self.db.query(func.count(Vote.id)).filter(
+            Vote.target_id == target_id,
+            Vote.target_type == target_type,
+            Vote.vote_type == "like"
+        ).scalar() or 0
+
+        dislikes = self.db.query(func.count(Vote.id)).filter(
+            Vote.target_id == target_id,
+            Vote.target_type == target_type,
+            Vote.vote_type == "dislike"
+        ).scalar() or 0
+
+        total = likes + dislikes
+        like_rate = likes / total if total > 0 else 0.0
+
+        return {
+            "likes": likes,
+            "dislikes": dislikes,
+            "total": total,
+            "like_rate": round(like_rate, 4)
+        }
+
+    def get_votes_by_target_ids(self, target_ids: list[int], target_type: str) -> dict[int, dict]:
+        """Get vote stats for multiple targets at once."""
+        if not target_ids:
+            return {}
+
+        votes = self.db.query(Vote).filter(
+            Vote.target_id.in_(target_ids),
+            Vote.target_type == target_type
+        ).all()
+
+        stats = {}
+        for target_id in target_ids:
+            stats[target_id] = {"likes": 0, "dislikes": 0, "total": 0, "like_rate": 0.0}
+
+        for vote in votes:
+            if vote.vote_type == "like":
+                stats[vote.target_id]["likes"] += 1
+            else:
+                stats[vote.target_id]["dislikes"] += 1
+            stats[vote.target_id]["total"] += 1
+
+        for target_id in target_ids:
+            total = stats[target_id]["total"]
+            if total > 0:
+                stats[target_id]["like_rate"] = round(stats[target_id]["likes"] / total, 4)
+
+        return stats
+
+    def get_editorial_by_id(self, editorial_id: int) -> Optional[Editorial]:
+        return self.db.query(Editorial).filter(Editorial.id == editorial_id).first()

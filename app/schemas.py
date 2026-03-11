@@ -2,7 +2,7 @@ from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
 from typing import Optional, List, Generic, TypeVar
 from datetime import datetime
 from app.models.user import UserRole
-from app.models.problem import SubmissionStatus
+from app.models.problem import SubmissionStatus, VoteType, VoteTargetType
 
 T = TypeVar('T')
 
@@ -271,3 +271,129 @@ class UserStreakOut(BaseModel):
     user_id: int = Field(..., description="User ID")
     username: str = Field(..., description="Username")
     streak_info: StreakInfo = Field(..., description="Streak information")
+
+
+class VoteCreate(BaseModel):
+    vote_type: VoteType = Field(..., description="Type of vote: like or dislike", example="like")
+
+
+class VoteOut(BaseModel):
+    id: int = Field(..., description="Vote ID")
+    user_id: int = Field(..., description="User ID who cast the vote")
+    target_id: int = Field(..., description="ID of the target (problem or editorial)")
+    target_type: VoteTargetType = Field(..., description="Type of target: problem or editorial")
+    vote_type: VoteType = Field(..., description="Type of vote: like or dislike")
+    created_at: datetime = Field(..., description="When the vote was created")
+    updated_at: datetime = Field(..., description="When the vote was last updated")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class VoteStats(BaseModel):
+    likes: int = Field(..., description="Number of likes")
+    dislikes: int = Field(..., description="Number of dislikes")
+    total: int = Field(..., description="Total number of votes")
+    like_rate: float = Field(..., description="Like rate (likes / total), 0.0 if no votes")
+
+
+class ProblemVoteStatsOut(BaseModel):
+    problem_id: int = Field(..., description="Problem ID")
+    title: str = Field(..., description="Problem title")
+    votes: VoteStats = Field(..., description="Vote statistics for the problem")
+
+
+class EditorialVoteStatsOut(BaseModel):
+    editorial_id: int = Field(..., description="Editorial ID")
+    problem_id: int = Field(..., description="Associated problem ID")
+    votes: VoteStats = Field(..., description="Vote statistics for the editorial")
+
+
+class CreatorVoteStatsOut(BaseModel):
+    username: str = Field(..., description="Creator username")
+    total_problems: int = Field(..., description="Total number of problems created")
+    total_likes: int = Field(..., description="Total likes across all problems")
+    total_dislikes: int = Field(..., description="Total dislikes across all problems")
+    total_votes: int = Field(..., description="Total votes across all problems")
+    overall_like_rate: float = Field(..., description="Overall like rate (total_likes / total_votes)")
+    problems: List[ProblemVoteStatsOut] = Field(..., description="Vote stats for each problem")
+
+
+# Problem Discussion Schemas
+class DiscussionCreate(BaseModel):
+    title: str = Field(..., description="Discussion title", min_length=1, max_length=200)
+    content: str = Field(..., description="Discussion content", min_length=1)
+
+
+class DiscussionUpdate(BaseModel):
+    title: Optional[str] = Field(None, description="Discussion title", min_length=1, max_length=200)
+    content: Optional[str] = Field(None, description="Discussion content", min_length=1)
+
+
+class DiscussionOut(BaseModel):
+    id: int
+    problem_id: int
+    title: str
+    content: str
+    author_id: int
+    author_username: Optional[str]
+    is_published: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DiscussionCommentCreate(BaseModel):
+    content: str = Field(..., description="Comment content", min_length=1)
+    parent_id: Optional[int] = Field(None, description="Parent comment ID for replies")
+
+
+class DiscussionCommentUpdate(BaseModel):
+    content: str = Field(..., description="Comment content", min_length=1)
+
+
+class DiscussionCommentOut(BaseModel):
+    id: int
+    discussion_id: int
+    content: str
+    author_id: int
+    author_username: Optional[str]
+    parent_id: Optional[int]
+    is_published: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class DiscussionTreeOut(BaseModel):
+    id: int
+    content: str
+    author_id: int
+    author_username: Optional[str]
+    discussion_id: int
+    parent_id: Optional[int]
+    is_published: bool
+    is_deleted: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    replies: List["DiscussionTreeOut"] = []
+
+
+class DiscussionDetailOut(DiscussionOut):
+    comments: List[DiscussionTreeOut] = []
+
+
+# Bookmark Schemas
+class BookmarkCreate(BaseModel):
+    problem_id: int = Field(..., description="Problem ID to bookmark")
+
+
+class BookmarkOut(BaseModel):
+    id: int
+    user_id: int
+    problem_id: int
+    problem_title: Optional[str] = None
+    created_at: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)

@@ -7,6 +7,9 @@ from app.services.leaderboard_service import LeaderboardService
 from app.services.user_service import UserService
 from app.api.dependencies import RoleChecker
 from app.models.user import UserRole
+from app.core.config import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(
     prefix="/users",
@@ -34,16 +37,19 @@ def get_my_submission_history(
     db: Session = Depends(get_db),
     current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
 ):
+    logger.info(f"Getting submission history for {current_user.username}: {start_date} to {end_date}")
     try:
         start = datetime.strptime(start_date, "%Y-%m-%d")
         end = datetime.strptime(end_date, "%Y-%m-%d")
     except ValueError:
+        logger.warning(f"Invalid date format: start_date={start_date}, end_date={end_date}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid date format. Use YYYY-MM-DD."
         )
 
     if start > end:
+        logger.warning(f"Invalid date range: start={start_date} > end={end_date}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Start date must be before or equal to end date"
@@ -51,8 +57,11 @@ def get_my_submission_history(
 
     leaderboard_service = LeaderboardService(db)
     try:
-        return leaderboard_service.get_user_submission_history(current_user.id, start, end)
+        result = leaderboard_service.get_user_submission_history(current_user.id, start, end)
+        logger.debug(f"Submission history retrieved: {len(result.daily_submissions)} days")
+        return result
     except ValueError as exc:
+        logger.error(f"Failed to get submission history: {str(exc)}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 @router.get(
@@ -106,10 +115,14 @@ def get_my_streaks(
     db: Session = Depends(get_db),
     current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
 ):
+    logger.info(f"Getting streaks for {current_user.username}")
     leaderboard_service = LeaderboardService(db)
     try:
-        return leaderboard_service.get_user_streaks(current_user.id)
+        result = leaderboard_service.get_user_streaks(current_user.id)
+        logger.debug(f"Streaks retrieved: current={result.streak_info.current_streak}, max={result.streak_info.max_streak}")
+        return result
     except ValueError as exc:
+        logger.error(f"Failed to get streaks: {str(exc)}")
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
 
 @router.get(
@@ -165,8 +178,15 @@ def follow_user(
     db: Session = Depends(get_db),
     current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
 ):
-    user_service = UserService(db)
-    return user_service.follow_user(current_user, target_user_id, current_user)
+    logger.info(f"Follow request: {current_user.username} -> user_id={target_user_id}")
+    try:
+        user_service = UserService(db)
+        result = user_service.follow_user(current_user, target_user_id, current_user)
+        logger.info(f"Follow successful: {current_user.username} -> user_id={target_user_id}")
+        return result
+    except Exception as e:
+        logger.error(f"Follow failed: {current_user.username} -> user_id={target_user_id}, error={str(e)}")
+        raise
 
 @router.delete(
     "/me/follow/{target_user_id}",
@@ -184,8 +204,15 @@ def unfollow_user(
     db: Session = Depends(get_db),
     current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
 ):
-    user_service = UserService(db)
-    return user_service.unfollow_user(current_user, target_user_id, current_user)
+    logger.info(f"Unfollow request: {current_user.username} -> user_id={target_user_id}")
+    try:
+        user_service = UserService(db)
+        result = user_service.unfollow_user(current_user, target_user_id, current_user)
+        logger.info(f"Unfollow successful: {current_user.username} -> user_id={target_user_id}")
+        return result
+    except Exception as e:
+        logger.error(f"Unfollow failed: {current_user.username} -> user_id={target_user_id}, error={str(e)}")
+        raise
 
 
 def _get_my_submission_history_window(db: Session, current_user, days: int):

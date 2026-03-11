@@ -1,5 +1,5 @@
 from sqlalchemy.orm import Session
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime, timedelta
 from collections import defaultdict
 from app.repositories.problem_repository import ProblemRepository
@@ -9,13 +9,19 @@ from app.schemas import (
     UserSubmissionHistoryOut, SubmissionHistoryEntry, UserStreakOut, StreakInfo
 )
 from app.models.problem import SubmissionStatus
+from app.models.user import User
+from app.core.config import get_logger
+
+logger = get_logger(__name__)
 
 class LeaderboardService:
     def __init__(self, db: Session):
         self.problem_repo = ProblemRepository(db)
         self.user_repo = UserRepository(db)
+        logger.debug("LeaderboardService initialized")
 
     def submission_leaderboard(self, page: int = 1, page_size: int = 20, search: Optional[str] = None, days: Optional[int] = None):
+        logger.debug(f"Generating submission leaderboard: page={page}, page_size={page_size}, days={days}")
         if days is None:
             submissions = self.problem_repo.list_all_submissions()
         else:
@@ -196,3 +202,78 @@ class LeaderboardService:
         end = datetime.now()
         start = end - timedelta(days=days - 1)
         return start, end
+
+    def get_following_leaderboard(
+        self,
+        user_id: int,
+        page: int = 1,
+        page_size: int = 20,
+        days: Optional[int] = None
+    ):
+        """
+        Generate a leaderboard consisting only of users that the current user follows.
+        Includes the current user as well so they can see their own ranking.
+        """
+        logger.info(f"Generating following leaderboard: user_id={user_id}, page={page}, days={days}")
+        
+        # Get the current user
+        current_user = self.user_repo.get_user_by_id(user_id)
+        if not current_user:
+            raise ValueError("User not found")
+        
+        # Get list of users the current user follows
+        following_usernames = {user.username for user in current_user.following}
+        # Also include the current user themselves
+        following_usernames.add(current_user.username)
+        
+        logger.debug(f"User {current_user.username} follows {len(following_usernames) - 1} users")
+        
+        # Get submissions based on time range
+        if days is None:
+            submissions = self.problem_repo.list_all_submissions()
+        else:
+            start, end = self._get_date_range_from_days(days)
+            submissions = self.problem_repo.list_submissions_in_date_range(start, end)
+        
+        # Filter submissions to only include followed users + current user
+        accepted = [
+            s for s in submissions 
+            if s.status == SubmissionStatus.ACCEPTED.value and s.username in following_usernames
+        ]
+        
+        # Count unique problems solved per user
+        solved_by_user: dict[str, set[int]] = {}
+        for submission in accepted:
+            solved_by_user.setdefault(submission.username, set()).add(submission.problem_id)
+        
+        # Build leaderboard
+        leaderboard = [
+            LeaderboardEntryOut(username=username, accepted_problem_count=len(problem_ids))
+            for username, problem_ids in solved_by_user.items()
+        ]
+        
+        # Sort by problem count (descending)
+        leaderboard.sort(key=lambda entry: entry.accepted_problem_count, reverse=True)
+        
+        # Calculate pagination
+        total = len(leaderboard)
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        paginated = leaderboard[start_index:end_index]
+        
+        pages = (total + page_size - 1) // page_size
+        has_next = page < pages
+        has_prev = page > 1
+        
+        logger.info(f"Following leaderboard generated: {total} entries, {pages} pages")
+        
+        return {
+            "items": paginated,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+            "has_next": has_next,
+            "has_prev": has_prev,
+            "following_count": len(current_user.following)
+        }

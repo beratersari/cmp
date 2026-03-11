@@ -15,17 +15,28 @@ from app.schemas import (
     EditorialCreate,
     EditorialUpdate,
     TestcaseCreate,
+    VoteCreate,
+    VoteStats,
+    ProblemVoteStatsOut,
+    EditorialVoteStatsOut,
+    CreatorVoteStatsOut,
 )
 from app.models.user import UserRole
 from app.models.problem import SubmissionStatus
+from app.core.config import get_logger
+
+logger = get_logger(__name__)
 
 class ProblemService:
     def __init__(self, db: Session):
         self.problem_repo = ProblemRepository(db)
         self.user_repo = UserRepository(db)
+        logger.debug("ProblemService initialized")
 
     def create_problem(self, problem_create: ProblemCreate, owner_id: int, created_by: str):
+        logger.debug(f"Creating problem: title='{problem_create.title}', owner_id={owner_id}")
         if self.problem_repo.get_problem_by_title(problem_create.title):
+            logger.warning(f"Problem title already exists: '{problem_create.title}'")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Problem title already exists"
@@ -33,8 +44,11 @@ class ProblemService:
         if problem_create.tags:
             problem_create.tags = [tag.strip() for tag in problem_create.tags if tag.strip()]
         try:
-            return self.problem_repo.create_problem(problem_create, owner_id, created_by=created_by)
+            problem = self.problem_repo.create_problem(problem_create, owner_id, created_by=created_by)
+            logger.debug(f"Problem created: id={problem.id}, title='{problem.title}'")
+            return problem
         except ValueError as exc:
+            logger.error(f"Failed to create problem: {str(exc)}")
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
 
     def list_problems(self, current_user=None, tag: str | None = None, page: int = 1, page_size: int = 20, search: Optional[str] = None):
@@ -363,4 +377,159 @@ class ProblemService:
             raise HTTPException(status_code=404, detail="Editorial not found")
             
         self.problem_repo.delete_editorial(editorial)
+
+    # Vote-related service methods
+    def vote_problem(self, problem_id: int, vote_create: VoteCreate, user_id: int):
+        logger.debug(f"Voting on problem: problem_id={problem_id}, user_id={user_id}, vote_type={vote_create.vote_type}")
+        # Verify problem exists and is accessible
+        problem = self.get_problem(problem_id, None)
+        if not problem.is_published:
+            logger.warning(f"Cannot vote on unpublished problem: problem_id={problem_id}")
+            raise HTTPException(status_code=403, detail="Cannot vote on unpublished problems")
+        
+        vote = self.problem_repo.create_or_update_vote(
+            user_id=user_id,
+            target_id=problem_id,
+            target_type="problem",
+            vote_type=vote_create.vote_type.value
+        )
+        logger.debug(f"Vote recorded: vote_id={vote.id}")
+        return vote
+
+    def delete_problem_vote(self, problem_id: int, user_id: int):
+        # Verify problem exists
+        self.get_problem(problem_id, None)
+        
+        deleted = self.problem_repo.delete_vote(
+            user_id=user_id,
+            target_id=problem_id,
+            target_type="problem"
+        )
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Vote not found")
+        return {"message": "Vote removed successfully"}
+
+    def vote_editorial(self, problem_id: int, vote_create: VoteCreate, user_id: int):
+        # Verify problem and editorial exist
+        problem = self.get_problem(problem_id, None)
+        if not problem.is_published:
+            raise HTTPException(status_code=403, detail="Cannot vote on unpublished problem editorials")
+        
+        editorial = self.problem_repo.get_editorial_by_problem_id(problem_id)
+        if not editorial:
+            raise HTTPException(status_code=404, detail="Editorial not found")
+        
+        vote = self.problem_repo.create_or_update_vote(
+            user_id=user_id,
+            target_id=editorial.id,
+            target_type="editorial",
+            vote_type=vote_create.vote_type.value
+        )
+        return vote
+
+    def delete_editorial_vote(self, problem_id: int, user_id: int):
+        # Verify problem and editorial exist
+        self.get_problem(problem_id, None)
+        editorial = self.problem_repo.get_editorial_by_problem_id(problem_id)
+        if not editorial:
+            raise HTTPException(status_code=404, detail="Editorial not found")
+        
+        deleted = self.problem_repo.delete_vote(
+            user_id=user_id,
+            target_id=editorial.id,
+            target_type="editorial"
+        )
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Vote not found")
+        return {"message": "Vote removed successfully"}
+
+    def get_problem_vote_stats(self, problem_id: int) -> ProblemVoteStatsOut:
+        problem = self.problem_repo.get_problem_by_id(problem_id)
+        if not problem:
+            raise HTTPException(status_code=404, detail="Problem not found")
+        
+        stats = self.problem_repo.get_vote_stats(problem_id, "problem")
+        return ProblemVoteStatsOut(
+            problem_id=problem_id,
+            title=problem.title,
+            votes=VoteStats(**stats)
+        )
+
+    def get_editorial_vote_stats(self, problem_id: int) -> EditorialVoteStatsOut:
+        problem = self.problem_repo.get_problem_by_id(problem_id)
+        if not problem:
+            raise HTTPException(status_code=404, detail="Problem not found")
+        
+        editorial = self.problem_repo.get_editorial_by_problem_id(problem_id)
+        if not editorial:
+            raise HTTPException(status_code=404, detail="Editorial not found")
+        
+        stats = self.problem_repo.get_vote_stats(editorial.id, "editorial")
+        return EditorialVoteStatsOut(
+            editorial_id=editorial.id,
+            problem_id=problem_id,
+            votes=VoteStats(**stats)
+        )
+
+    def get_creator_vote_stats(self, current_user) -> list[CreatorVoteStatsOut]:
+        """Get vote statistics grouped by creator."""
+        logger.debug(f"Getting creator vote stats for user: {current_user.username}")
+        # Only admin and creator can see these stats
+        if current_user.role not in [UserRole.ADMIN, UserRole.CREATOR]:
+            logger.warning(f"Unauthorized access to creator stats: {current_user.username}")
+            raise HTTPException(status_code=403, detail="Not authorized to view creator stats")
+        
+        # Get all problems with their owners
+        problems, _ = self.problem_repo.list_problems()
+        
+        # Group problems by creator
+        creator_problems = {}
+        for problem in problems:
+            owner = problem.owner
+            if not owner:
+                continue
+            
+            if owner.username not in creator_problems:
+                creator_problems[owner.username] = []
+            creator_problems[owner.username].append(problem)
+        
+        # Get vote stats for all problems
+        problem_ids = [p.id for p in problems]
+        vote_stats = self.problem_repo.get_votes_by_target_ids(problem_ids, "problem")
+        
+        # Build creator stats
+        results = []
+        for username, probs in creator_problems.items():
+            problem_stats = []
+            total_likes = 0
+            total_dislikes = 0
+            total_votes = 0
+            
+            for problem in probs:
+                stats = vote_stats.get(problem.id, {"likes": 0, "dislikes": 0, "total": 0, "like_rate": 0.0})
+                total_likes += stats["likes"]
+                total_dislikes += stats["dislikes"]
+                total_votes += stats["total"]
+                
+                problem_stats.append(ProblemVoteStatsOut(
+                    problem_id=problem.id,
+                    title=problem.title,
+                    votes=VoteStats(**stats)
+                ))
+            
+            overall_like_rate = total_likes / total_votes if total_votes > 0 else 0.0
+            
+            results.append(CreatorVoteStatsOut(
+                username=username,
+                total_problems=len(probs),
+                total_likes=total_likes,
+                total_dislikes=total_dislikes,
+                total_votes=total_votes,
+                overall_like_rate=round(overall_like_rate, 4),
+                problems=problem_stats
+            ))
+        
+        # Sort by overall like rate (descending), then by total likes
+        results.sort(key=lambda x: (-x.overall_like_rate, -x.total_likes))
+        return results
 

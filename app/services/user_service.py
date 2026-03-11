@@ -6,10 +6,14 @@ from app.schemas import UserCreate, LoginRequest, Token, UserRegister, Education
 from app.core.security import get_password_hash, verify_password, create_access_token, ACCESS_TOKEN_EXPIRE_MINUTES
 from datetime import timedelta
 from app.models.user import UserRole
+from app.core.config import get_logger
+
+logger = get_logger(__name__)
 
 class UserService:
     def __init__(self, db: Session):
         self.user_repo = UserRepository(db)
+        logger.debug("UserService initialized")
 
     def list_users(self, page: int = 1, page_size: int = 20, search: Optional[str] = None):
         skip = (page - 1) * page_size
@@ -35,13 +39,16 @@ class UserService:
         }
 
     def register_user(self, user_register: UserRegister):
+        logger.debug(f"Registering user: username={user_register.username}")
         # Business logic: Check if user or email already exists
         if self.user_repo.get_user_by_username(user_register.username):
+            logger.warning(f"Username already registered: {user_register.username}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Username already registered"
             )
         if self.user_repo.get_user_by_email(user_register.email):
+            logger.warning(f"Email already registered: {user_register.email}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email already registered"
@@ -62,6 +69,7 @@ class UserService:
         )
         user.followers_count = 0
         user.following_count = 0
+        logger.debug(f"User registered: id={user.id}, username={user.username}")
         return user
 
     def create_user_by_admin(self, user_create: UserCreate):
@@ -121,14 +129,17 @@ class UserService:
         self.user_repo.delete_education(education)
 
     def authenticate_user(self, login_request: LoginRequest):
+        logger.debug(f"Authenticating user: {login_request.username}")
         user = self.user_repo.get_user_by_username(login_request.username)
         if not user or not verify_password(login_request.password, user.hashed_password):
+            logger.warning(f"Authentication failed for user: {login_request.username}")
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Incorrect username or password",
                 headers={"WWW-Authenticate": "Bearer"},
             )
         if not user.is_active:
+            logger.warning(f"Authentication failed - inactive account: {login_request.username}")
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="User account is inactive",
@@ -139,6 +150,7 @@ class UserService:
             data={"sub": user.username, "role": user.role},
             expires_delta=access_token_expires
         )
+        logger.debug(f"Authentication successful: {login_request.username}, role={user.role}")
         return Token(access_token=access_token, token_type="bearer")
 
     def get_follow_stats(self, user, current_user):

@@ -3,6 +3,11 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.schemas import LeaderboardEntryOut, CreatorLeaderboardEntryOut, PaginatedResponse
 from app.services.leaderboard_service import LeaderboardService
+from app.api.dependencies import RoleChecker, get_current_user
+from app.models.user import UserRole
+from app.core.config import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(
     prefix="/leaderboards",
@@ -32,8 +37,11 @@ def submission_leaderboard(
     page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
     search: str | None = Query(default=None, description="Search by username")
 ):
+    logger.info(f"Getting submission leaderboard: page={page}, page_size={page_size}, search={search}")
     leaderboard_service = LeaderboardService(db)
-    return leaderboard_service.submission_leaderboard(page=page, page_size=page_size, search=search)
+    result = leaderboard_service.submission_leaderboard(page=page, page_size=page_size, search=search)
+    logger.debug(f"Submission leaderboard retrieved: {len(result.get('items', []))} entries")
+    return result
 
 @router.get(
     "/submissions/last-7-days",
@@ -128,8 +136,11 @@ def creator_leaderboard(
     page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
     search: str | None = Query(default=None, description="Search by username")
 ):
+    logger.info(f"Getting creator leaderboard: page={page}, page_size={page_size}, search={search}")
     leaderboard_service = LeaderboardService(db)
-    return leaderboard_service.creator_leaderboard(page=page, page_size=page_size, search=search)
+    result = leaderboard_service.creator_leaderboard(page=page, page_size=page_size, search=search)
+    logger.debug(f"Creator leaderboard retrieved: {len(result.get('items', []))} entries")
+    return result
 
 @router.get(
     "/creators/last-7-days",
@@ -202,3 +213,129 @@ def creator_leaderboard_last_year(
 ):
     leaderboard_service = LeaderboardService(db)
     return leaderboard_service.creator_leaderboard(page=page, page_size=page_size, search=search, days=365)
+
+
+# ============================================================================
+# Following Leaderboard Endpoints
+# ============================================================================
+
+@router.get(
+    "/following",
+    response_model=dict,
+    summary="Leaderboard of users you follow",
+    description="""
+    Returns a leaderboard consisting only of users that the current user follows,
+    plus the current user themselves.
+    
+    Ranked by unique problems solved with ACCEPTED submissions.
+
+    ### Pagination:
+    - Use `page` and `page_size` query parameters to control pagination.
+    - Default: page=1, page_size=20
+    """
+)
+def following_leaderboard(
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Getting following leaderboard: user={current_user.username}, page={page}")
+    leaderboard_service = LeaderboardService(db)
+    result = leaderboard_service.get_following_leaderboard(
+        user_id=current_user.id,
+        page=page,
+        page_size=page_size
+    )
+    logger.debug(f"Following leaderboard retrieved: {len(result.get('items', []))} entries")
+    return result
+
+
+@router.get(
+    "/following/last-7-days",
+    response_model=dict,
+    summary="Leaderboard of users you follow (last 7 days)",
+    description="""
+    Returns a leaderboard of users you follow, ranked by unique problems solved
+    with ACCEPTED submissions in the last 7 days.
+
+    ### Pagination:
+    - Use `page` and `page_size` query parameters to control pagination.
+    - Default: page=1, page_size=20
+    """
+)
+def following_leaderboard_last_7_days(
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Getting following leaderboard (7 days): user={current_user.username}, page={page}")
+    leaderboard_service = LeaderboardService(db)
+    result = leaderboard_service.get_following_leaderboard(
+        user_id=current_user.id,
+        page=page,
+        page_size=page_size,
+        days=7
+    )
+    return result
+
+
+@router.get(
+    "/following/last-30-days",
+    response_model=dict,
+    summary="Leaderboard of users you follow (last 30 days)",
+    description="""
+    Returns a leaderboard of users you follow, ranked by unique problems solved
+    with ACCEPTED submissions in the last 30 days.
+
+    ### Pagination:
+    - Use `page` and `page_size` query parameters to control pagination.
+    - Default: page=1, page_size=20
+    """
+)
+def following_leaderboard_last_30_days(
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Getting following leaderboard (30 days): user={current_user.username}, page={page}")
+    leaderboard_service = LeaderboardService(db)
+    result = leaderboard_service.get_following_leaderboard(
+        user_id=current_user.id,
+        page=page,
+        page_size=page_size,
+        days=30
+    )
+    return result
+
+
+@router.get(
+    "/following/last-year",
+    response_model=dict,
+    summary="Leaderboard of users you follow (last year)",
+    description="""
+    Returns a leaderboard of users you follow, ranked by unique problems solved
+    with ACCEPTED submissions in the last year.
+
+    ### Pagination:
+    - Use `page` and `page_size` query parameters to control pagination.
+    - Default: page=1, page_size=20
+    """
+)
+def following_leaderboard_last_year(
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Getting following leaderboard (1 year): user={current_user.username}, page={page}")
+    leaderboard_service = LeaderboardService(db)
+    result = leaderboard_service.get_following_leaderboard(
+        user_id=current_user.id,
+        page=page,
+        page_size=page_size,
+        days=365
+    )
+    return result

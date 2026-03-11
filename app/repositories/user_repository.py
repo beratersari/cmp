@@ -2,10 +2,14 @@ from sqlalchemy.orm import Session, joinedload
 from typing import Optional, List
 from app.models.user import User, Education
 from app.schemas import UserCreate, EducationCreate
+from app.core.config import get_logger
+
+logger = get_logger(__name__)
 
 class UserRepository:
     def __init__(self, db: Session):
         self.db = db
+        logger.debug("UserRepository initialized")
 
     def get_user_by_username(self, username: str):
         return self.db.query(User).options(joinedload(User.educations)).filter(User.username == username).first()
@@ -17,6 +21,7 @@ class UserRepository:
         return self.db.query(User).options(joinedload(User.educations)).filter(User.id == user_id).first()
 
     def create_user(self, user_create: UserCreate, hashed_password: str, created_by: str = None, educations: Optional[List[EducationCreate]] = None):
+        logger.debug(f"Creating user in database: username={user_create.username}, role={user_create.role}")
         db_user = User(
             username=user_create.username,
             email=user_create.email,
@@ -30,6 +35,7 @@ class UserRepository:
 
         # Add educations if provided
         if educations:
+            logger.debug(f"Adding {len(educations)} education entries for user: {user_create.username}")
             for edu in educations:
                 db_education = Education(
                     user_id=db_user.id,
@@ -44,6 +50,7 @@ class UserRepository:
 
         self.db.commit()
         self.db.refresh(db_user)
+        logger.debug(f"User created in database: id={db_user.id}, username={db_user.username}")
         return db_user
 
     def add_education(self, user: User, education_create: EducationCreate):

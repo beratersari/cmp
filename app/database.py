@@ -18,6 +18,7 @@ TAG_TABLE_NAME = "tags"
 PROBLEM_TAG_TABLE_NAME = "problem_tags"
 EDITORIAL_TABLE_NAME = "editorials"
 USER_FOLLOWS_TABLE_NAME = "user_follows"
+VOTES_TABLE_NAME = "votes"
 
 
 def add_column_if_missing(connection, table_name: str, column_name: str, column_sql: str):
@@ -138,6 +139,131 @@ def run_sqlite_migrations(engine_override=None):
                 PRIMARY KEY (follower_id, followed_id),
                 FOREIGN KEY(follower_id) REFERENCES users(id) ON DELETE CASCADE,
                 FOREIGN KEY(followed_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Create votes table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS votes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                target_id INTEGER NOT NULL,
+                target_type TEXT NOT NULL,
+                vote_type TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, target_id, target_type)
+            )
+            """
+        ))
+
+        # Create forum posts table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS forum_posts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                author_id INTEGER NOT NULL,
+                is_published BOOLEAN NOT NULL DEFAULT 1,
+                is_deleted BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Create forum comments table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS forum_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT NOT NULL,
+                author_id INTEGER NOT NULL,
+                post_id INTEGER NOT NULL,
+                parent_id INTEGER,
+                is_published BOOLEAN NOT NULL DEFAULT 1,
+                is_deleted BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(post_id) REFERENCES forum_posts(id) ON DELETE CASCADE,
+                FOREIGN KEY(parent_id) REFERENCES forum_comments(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Create emoji reactions table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS emoji_reactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                target_type TEXT NOT NULL,
+                target_id INTEGER NOT NULL,
+                emoji TEXT NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                UNIQUE(user_id, target_type, target_id)
+            )
+            """
+        ))
+
+        # Create problem discussions table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS problem_discussions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                problem_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                author_id INTEGER NOT NULL,
+                is_published BOOLEAN NOT NULL DEFAULT 1,
+                is_deleted BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(problem_id) REFERENCES problems(id) ON DELETE CASCADE,
+                FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Create problem discussion comments table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS problem_discussion_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                discussion_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                author_id INTEGER NOT NULL,
+                parent_id INTEGER,
+                is_published BOOLEAN NOT NULL DEFAULT 1,
+                is_deleted BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(discussion_id) REFERENCES problem_discussions(id) ON DELETE CASCADE,
+                FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(parent_id) REFERENCES problem_discussion_comments(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Create bookmarks table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS bookmarks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                problem_id INTEGER NOT NULL,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(problem_id) REFERENCES problems(id) ON DELETE CASCADE,
+                UNIQUE(user_id, problem_id)
             )
             """
         ))
