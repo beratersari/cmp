@@ -224,6 +224,12 @@ class UserService:
     def ensure_dummy_admin(self, username: str, email: str, password: str):
         existing_admin = self.user_repo.get_user_by_username(username)
         if existing_admin:
+            # Update the password in case it changed
+            hashed_password = get_password_hash(password)
+            existing_admin.hashed_password = hashed_password
+            existing_admin.email = email  # Also update email in case it changed
+            self.user_repo.db.commit()
+            self.user_repo.db.refresh(existing_admin)
             return existing_admin
         dummy_admin = UserCreate(
             username=username,

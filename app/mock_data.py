@@ -158,6 +158,22 @@ def seed_mock_data(db: Session):
     bookmark_service = BookmarkService(db)
     seed_bookmarks(bookmark_service, problems, users)
 
+    # Create contests
+    from app.services.contest_service import ContestService
+    contest_service = ContestService(db)
+    seed_contests(contest_service, problem_service, problems, creators, admin)
+
+    # Create contest discussions
+    from app.services.contest_discussion_service import ContestDiscussionService
+    contest_discussion_service = ContestDiscussionService(db)
+    seed_contest_discussions(contest_discussion_service, contest_service, users, admin)
+
+    # Create contest registrations
+    seed_contest_registrations(contest_service, contest_service.contest_repo, users, admin)
+
+    # Create contest announcements
+    seed_contest_announcements(contest_service, contest_service.contest_repo, admin)
+
 
 def seed_forum_data(forum_service: ForumService, users, admin):
     """
@@ -526,4 +542,356 @@ def seed_bookmarks(bookmark_service, problems, users):
                 bookmark_service.add_bookmark(user.id, problem.id)
             except Exception:
                 pass
+
+
+def seed_contests(contest_service, problem_service, problems, creators, admin):
+    """
+    Seed contests with problems.
+    Creates 5 contests with 30 problems each.
+    """
+    from app.schemas import ContestCreate, ProblemCreate, Testcase
+    from app.models.contest import ContestType
+    from datetime import datetime, timedelta, timezone
+
+    # Check if we already have contests
+    existing_contests = contest_service.list_contests(current_user=admin)
+    if existing_contests["total"] >= 5:
+        return  # Already have enough contests
+
+    owners = creators if creators else [admin]
+    
+    # Create additional problems for contests (30 problems per contest, 5 contests = 150 problems)
+    # We'll create new problems specifically for contests
+    contest_problems = []
+    
+    # Create 150 problems for contests
+    for i in range(150):
+        owner = owners[i % len(owners)]
+        problem_create = ProblemCreate(
+            title=f"Contest Problem {i + 1}",
+            description=f"Description for contest problem {i + 1}. This is a challenging problem for competitive programming.",
+            constraints="1 <= n <= 10^5",
+            difficulty=(i % 10) + 1,
+            testcases=[Testcase(input="1", output="1"), Testcase(input="2", output="2")],
+            tags=[],
+            is_published=True,
+            is_public=True
+        )
+        try:
+            problem = problem_service.create_problem(problem_create, owner_id=owner.id, created_by=owner.username)
+            contest_problems.append(problem)
+        except Exception:
+            pass
+
+    if len(contest_problems) < 150:
+        # If we couldn't create enough problems, use existing ones too
+        contest_problems = list(problems) + contest_problems
+
+    # Create 5 contests
+    now = datetime.now(timezone.utc)
+    contest_data = [
+        {
+            "title": "Weekly Contest 1",
+            "description": "First weekly contest with a mix of easy, medium, and hard problems. Perfect for beginners and intermediate programmers!",
+            "start_offset_days": -7,  # Past contest
+            "duration_hours": 2,
+            "contest_type": ContestType.PUBLIC,
+        },
+        {
+            "title": "Weekly Contest 2",
+            "description": "Second weekly contest featuring dynamic programming and graph problems.",
+            "start_offset_days": -3,  # Recent past contest
+            "duration_hours": 2,
+            "contest_type": ContestType.PUBLIC,
+        },
+        {
+            "title": "Biweekly Contest 1",
+            "description": "Biweekly contest with more challenging problems. Test your skills in algorithms and data structures!",
+            "start_offset_days": 1,  # Upcoming contest
+            "duration_hours": 2,
+            "contest_type": ContestType.PRIVATE,  # Private contest - requires registration
+        },
+        {
+            "title": "Monthly Challenge - March",
+            "description": "Monthly challenge with 30 problems covering various topics. Compete for the top spot on the leaderboard!",
+            "start_offset_days": 5,  # Future contest
+            "duration_hours": 24,
+            "contest_type": ContestType.PUBLIC,
+        },
+        {
+            "title": "Special Algorithm Contest",
+            "description": "A special contest focused on advanced algorithms: segment trees, suffix arrays, and more!",
+            "start_offset_days": 10,  # Future contest
+            "duration_hours": 3,
+            "contest_type": ContestType.PRIVATE,  # Private contest - requires registration
+        },
+    ]
+
+    created_contests = []
+    for i, data in enumerate(contest_data):
+        start_date = now + timedelta(days=data["start_offset_days"])
+        end_date = start_date + timedelta(hours=data["duration_hours"])
+        
+        # Select 30 problems for this contest
+        start_idx = i * 30
+        end_idx = start_idx + 30
+        contest_problem_ids = [p.id for p in contest_problems[start_idx:end_idx]]
+        
+        contest_create = ContestCreate(
+            title=data["title"],
+            description=data["description"],
+            start_date=start_date,
+            end_date=end_date,
+            contest_type=data["contest_type"],
+            problem_ids=contest_problem_ids
+        )
+        
+        try:
+            contest = contest_service.create_contest(
+                contest_create,
+                owner_id=admin.id,
+                created_by=admin.username
+            )
+            created_contests.append(contest)
+        except Exception as e:
+            pass
+
+    return created_contests
+
+
+def seed_contest_discussions(contest_discussion_service, contest_service, users, admin):
+    """
+    Seed discussions for contests.
+    """
+    # Get existing contests
+    contests_result = contest_service.list_contests(current_user=admin)
+    contests = contests_result.get("items", [])
+    
+    if not contests:
+        return
+
+    regular_users = [u for u in users if u.role == UserRole.USER][:5]
+    creators = [u for u in users if u.role == UserRole.CREATOR][:3]
+    authors = regular_users + creators + [admin]
+
+    if not authors:
+        authors = [admin]
+
+    # Discussion topics for contests
+    discussion_topics = [
+        ("How was the contest?", "What did you think about today's contest? Which problems did you find most challenging?"),
+        ("Problem Discussion", "Let's discuss the approaches used to solve the problems. Share your solutions!"),
+        ("Tips for this contest", "Here are some tips that might help you in this contest..."),
+    ]
+
+    created_discussions = []
+    for contest in contests[:5]:  # Create discussions for first 5 contests
+        for topic_idx, (title, content) in enumerate(discussion_topics):
+            author = authors[topic_idx % len(authors)]
+            try:
+                discussion = contest_discussion_service.create_discussion(
+                    contest_id=contest.id,
+                    title=title,
+                    content=content,
+                    author_id=author.id
+                )
+                created_discussions.append(discussion)
+            except Exception:
+                pass
+
+    # Add comments to discussions
+    for discussion in created_discussions[:10]:  # Add comments to first 10 discussions
+        for i in range(3):
+            author = authors[i % len(authors)]
+            try:
+                contest_discussion_service.create_comment(
+                    discussion_id=discussion.id,
+                    content=f"Great discussion! Here's my thought on this topic...",
+                    author_id=author.id
+                )
+            except Exception:
+                pass
+
+
+def seed_contest_registrations(contest_service, contest_repo, users, admin):
+    """
+    Seed contest registrations for contests.
+    Creates at least 40 registrations with different statuses.
+    """
+    from app.models.contest import ContestType, ContestRegistrationStatus
+    from app.repositories.contest_registration_repository import ContestRegistrationRepository
+    import random
+    
+    # Get all contests
+    contests_result = contest_service.list_contests(current_user=admin)
+    contests = contests_result.get("items", [])
+    
+    if not contests:
+        return
+    
+    # Get the db session from contest_repo
+    db = contest_repo.db
+    registration_repo = ContestRegistrationRepository(db)
+    
+    # Get all users except admin
+    regular_users = [u for u in users if u.role == UserRole.USER]
+    creators = [u for u in users if u.role == UserRole.CREATOR]
+    all_users = regular_users + creators
+    
+    if not all_users:
+        return
+    
+    # Track total registrations
+    total_registrations = 0
+    target_registrations = 40
+    
+    # Register users for all contests (both public and private)
+    for contest in contests:
+        if total_registrations >= target_registrations:
+            break
+            
+        # Determine how many users to register for this contest
+        users_to_register = min(8, len(all_users), target_registrations - total_registrations)
+        
+        for i in range(users_to_register):
+            user = all_users[i % len(all_users)]
+            try:
+                # Check if already registered
+                existing = registration_repo.get_registration_by_contest_and_user(contest.id, user.id)
+                if existing:
+                    continue
+                
+                # Create registration
+                registration = registration_repo.create_registration(contest.id, user.id)
+                total_registrations += 1
+                
+                # Assign different statuses based on position
+                # First 3 users get approved, next 2 get rejected, rest stay pending
+                if i < 3:
+                    registration_repo.update_registration_status(
+                        registration,
+                        ContestRegistrationStatus.APPROVED,
+                        approved_by=admin.id
+                    )
+                elif i < 5:
+                    registration_repo.update_registration_status(
+                        registration,
+                        ContestRegistrationStatus.REJECTED,
+                        approved_by=admin.id
+                    )
+                # Remaining registrations stay pending
+            except Exception:
+                pass
+    
+    # If we still need more registrations, create additional ones
+    while total_registrations < target_registrations:
+        for contest in contests:
+            if total_registrations >= target_registrations:
+                break
+            # Try to register more users
+            for user in all_users:
+                if total_registrations >= target_registrations:
+                    break
+                try:
+                    existing = registration_repo.get_registration_by_contest_and_user(contest.id, user.id)
+                    if existing:
+                        continue
+                    
+                    registration = registration_repo.create_registration(contest.id, user.id)
+                    total_registrations += 1
+                    
+                    # Vary the status
+                    status_choice = random.choice([
+                        ContestRegistrationStatus.APPROVED,
+                        ContestRegistrationStatus.PENDING,
+                        ContestRegistrationStatus.REJECTED
+                    ])
+                    
+                    if status_choice == ContestRegistrationStatus.APPROVED:
+                        registration_repo.update_registration_status(
+                            registration,
+                            ContestRegistrationStatus.APPROVED,
+                            approved_by=admin.id
+                        )
+                    elif status_choice == ContestRegistrationStatus.REJECTED:
+                        registration_repo.update_registration_status(
+                            registration,
+                            ContestRegistrationStatus.REJECTED,
+                            approved_by=admin.id
+                        )
+                except Exception:
+                    pass
+    
+    print(f"Created {total_registrations} contest registrations")
+
+
+def seed_contest_announcements(contest_service, contest_repo, admin):
+    """
+    Seed announcements for contests.
+    Creates announcements for each contest with various types of content.
+    """
+    from app.schemas import ContestAnnouncementCreate
+    
+    # Get all contests
+    contests_result = contest_service.list_contests(current_user=admin)
+    contests = contests_result.get("items", [])
+    
+    if not contests:
+        return
+    
+    # Get the db session from contest_repo
+    db = contest_repo.db
+    
+    # Announcement templates
+    announcement_templates = [
+        {
+            "title": "Welcome to the Contest!",
+            "content": "Welcome everyone to this exciting contest! We have prepared a variety of problems for you. Good luck and have fun!",
+            "is_published": True
+        },
+        {
+            "title": "Clarification on Problem A",
+            "content": "There was a typo in the problem statement for Problem A. The constraint should be 1 <= n <= 10^6, not 10^5. We apologize for the confusion.",
+            "is_published": True
+        },
+        {
+            "title": "Time Extended by 15 Minutes",
+            "content": "Due to technical difficulties at the start, we are extending the contest duration by 15 minutes. The new end time has been updated accordingly.",
+            "is_published": True
+        },
+        {
+            "title": "Reminder: Check Your Code",
+            "content": "Please make sure to test your code thoroughly before submitting. Remember that wrong answers will result in a 5-minute penalty.",
+            "is_published": True
+        },
+        {
+            "title": "Draft: Post-Contest Analysis",
+            "content": "This is a draft announcement for post-contest analysis. It will be published after the contest ends.",
+            "is_published": False
+        },
+    ]
+    
+    total_announcements = 0
+    
+    for contest in contests:
+        # Create 2-3 announcements per contest
+        num_announcements = min(3, len(announcement_templates))
+        
+        for i in range(num_announcements):
+            template = announcement_templates[i % len(announcement_templates)]
+            try:
+                contest_service.create_announcement(
+                    contest_id=contest.id,
+                    announcement_create=ContestAnnouncementCreate(
+                        title=template["title"],
+                        content=template["content"],
+                        is_published=template["is_published"]
+                    ),
+                    current_user=admin
+                )
+                total_announcements += 1
+            except Exception:
+                pass
+    
+    print(f"Created {total_announcements} contest announcements")
 

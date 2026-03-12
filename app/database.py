@@ -268,6 +268,123 @@ def run_sqlite_migrations(engine_override=None):
             """
         ))
 
+        # Create contests table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS contests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                title TEXT NOT NULL,
+                description TEXT,
+                start_date DATETIME NOT NULL,
+                end_date DATETIME NOT NULL,
+                is_archived BOOLEAN NOT NULL DEFAULT 0,
+                is_published BOOLEAN NOT NULL DEFAULT 0,
+                owner_id INTEGER NOT NULL,
+                created_by TEXT,
+                updated_by TEXT,
+                update_time DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(owner_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Create contest_problems join table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS contest_problems (
+                contest_id INTEGER NOT NULL,
+                problem_id INTEGER NOT NULL,
+                "order" INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (contest_id, problem_id),
+                FOREIGN KEY(contest_id) REFERENCES contests(id) ON DELETE CASCADE,
+                FOREIGN KEY(problem_id) REFERENCES problems(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Add order column to contest_problems if it doesn't exist
+        add_column_if_missing(connection, "contest_problems", "order", "INTEGER NOT NULL DEFAULT 0")
+
+        # Create contest_discussions table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS contest_discussions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contest_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                author_id INTEGER NOT NULL,
+                is_published BOOLEAN NOT NULL DEFAULT 1,
+                is_deleted BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(contest_id) REFERENCES contests(id) ON DELETE CASCADE,
+                FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Create contest_discussion_comments table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS contest_discussion_comments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                discussion_id INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                author_id INTEGER NOT NULL,
+                parent_id INTEGER,
+                is_published BOOLEAN NOT NULL DEFAULT 1,
+                is_deleted BOOLEAN NOT NULL DEFAULT 0,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(discussion_id) REFERENCES contest_discussions(id) ON DELETE CASCADE,
+                FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(parent_id) REFERENCES contest_discussion_comments(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
+        # Add contest_type column to contests table if it doesn't exist
+        add_column_if_missing(connection, "contests", "contest_type", "TEXT NOT NULL DEFAULT 'public'")
+
+        # Create contest_registrations table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS contest_registrations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contest_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                approved_at DATETIME,
+                approved_by INTEGER,
+                FOREIGN KEY(contest_id) REFERENCES contests(id) ON DELETE CASCADE,
+                FOREIGN KEY(user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY(approved_by) REFERENCES users(id),
+                UNIQUE(contest_id, user_id)
+            )
+            """
+        ))
+
+        # Create contest_announcements table if missing
+        connection.execute(text(
+            """
+            CREATE TABLE IF NOT EXISTS contest_announcements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                contest_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                content TEXT NOT NULL,
+                author_id INTEGER NOT NULL,
+                is_published BOOLEAN NOT NULL DEFAULT 1,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME,
+                FOREIGN KEY(contest_id) REFERENCES contests(id) ON DELETE CASCADE,
+                FOREIGN KEY(author_id) REFERENCES users(id) ON DELETE CASCADE
+            )
+            """
+        ))
+
         connection.commit()
 
 

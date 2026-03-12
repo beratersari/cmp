@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends
 from app.database import engine, Base, SessionLocal, run_sqlite_migrations
-from app.api import auth, dependencies, problems, leaderboards, users, forum
+from app.api import auth, dependencies, problems, leaderboards, users, forum, contests
 from app.models.user import UserRole
 from app.services.user_service import UserService
 from app.mock_data import seed_mock_data
@@ -78,6 +78,7 @@ app.include_router(problems.router)
 app.include_router(leaderboards.router)
 app.include_router(users.router)
 app.include_router(forum.router)
+app.include_router(contests.router)
 
 @app.get("/", tags=["Health Check"], summary="Check if the API is running")
 def root():

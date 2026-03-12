@@ -73,6 +73,10 @@ On startup, the application creates:
 - Accepted submissions for streak testing (consecutive days).
 - Sample editorials for problems.
 - **3 forum posts with 30+ comments and nested replies**.
+- **5 contests with 30 problems each (150 contest problems total)**.
+- **Contest announcements for each contest**.
+- **Contest discussions with comments for each contest**.
+- **Contest registrations for private contests (some approved, some pending)**.
 
 ## Authentication and Roles
 
@@ -161,6 +165,74 @@ Education can be added during registration or later via dedicated endpoints.
 - `DELETE /problems/{problem_id}/bookmarks` - Remove a bookmark
 - `GET /problems/bookmarks` - List your bookmarked problems (paginated)
 - `GET /problems/{problem_id}/bookmarks/me` - Check if a problem is bookmarked
+
+### Contests
+Contests allow you to organize problems into timed competitions.
+
+#### Contest Types
+Contests can have three types:
+- **public**: Visible to everyone, problems visible to everyone
+- **private**: Visible to everyone, but problems only visible to registered (approved) users
+- **archived**: Only visible to owner/admin (used for historical contests)
+
+#### Contest CRUD
+- `POST /contests` - Create a new contest (admin/creator)
+- `GET /contests` - List all contests (filtered by visibility)
+- `GET /contests/upcoming` - List upcoming contests
+- `GET /contests/active` - List currently running contests
+- `GET /contests/past` - List past contests
+- `GET /contests/{contest_id}` - Get contest details with problems
+- `PUT /contests/{contest_id}` - Update a contest (admin/owner)
+- `DELETE /contests/{contest_id}` - Delete a contest (admin/owner)
+
+#### Contest Problem Management
+- `POST /contests/{contest_id}/problems` - Add problems to a contest
+- `DELETE /contests/{contest_id}/problems` - Remove problems from a contest
+- `PUT /contests/{contest_id}/problems/order` - Reorder problems in a contest
+
+#### Contest Registration
+For private contests, users must register and be approved to see problems:
+- `POST /contests/{contest_id}/register` - Register for a contest
+- `GET /contests/{contest_id}/registration` - Get my registration status
+- `DELETE /contests/{contest_id}/registration` - Cancel my registration
+- `GET /contests/{contest_id}/registrations` - List all registrations (admin/owner)
+- `PUT /contests/{contest_id}/registrations/{registration_id}` - Approve/reject registration (admin/owner)
+- `GET /contests/{contest_id}/registrations/summary` - Get registration summary (admin/owner)
+- `GET /contests/my/registrations` - List all my contest registrations
+
+**Registration Status Values:**
+- `pending` - Registration awaiting approval
+- `approved` - User can see problems in private contests
+- `rejected` - User's registration was denied
+
+#### Contest Announcements
+Admins and contest creators can create announcements for contests:
+- `POST /contests/{contest_id}/announcements` - Create an announcement (admin/owner)
+- `GET /contests/{contest_id}/announcements` - List announcements for a contest (paginated)
+- `GET /contests/{contest_id}/announcements/{announcement_id}` - Get a specific announcement
+- `PUT /contests/{contest_id}/announcements/{announcement_id}` - Update an announcement (admin/owner)
+- `DELETE /contests/{contest_id}/announcements/{announcement_id}` - Delete an announcement (admin/owner)
+
+**Announcement Features:**
+- Announcements have a title and content
+- Can be published or unpublished (draft mode)
+- Only admins and contest owners can create/edit/delete announcements
+- Regular users can only see published announcements
+- Announcements are ordered by creation date (newest first)
+
+### Contest Discussions
+Discussions attached to specific contests (LeetCode-style):
+
+- `POST /contests/{contest_id}/discussions` - Create a discussion thread for a contest
+- `GET /contests/{contest_id}/discussions` - List discussions for a contest (paginated)
+- `GET /contests/discussions/{discussion_id}` - Get a discussion with comment tree
+- `PUT /contests/discussions/{discussion_id}` - Update a discussion (author/admin)
+- `DELETE /contests/discussions/{discussion_id}` - Delete a discussion (author/admin)
+- `POST /contests/discussions/{discussion_id}/comments` - Add a comment or reply
+- `GET /contests/discussions/{discussion_id}/comments` - Get discussion comments (tree)
+- `GET /contests/discussion-comments/{comment_id}` - Get a discussion comment
+- `PUT /contests/discussion-comments/{comment_id}` - Update a discussion comment
+- `DELETE /contests/discussion-comments/{comment_id}` - Delete a discussion comment
 
 ### Problem Access Control
 - `POST /problems/{problem_id}/allowed-users/{username}` (admin/creator)
@@ -506,5 +578,167 @@ curl -X GET "http://localhost:8000/leaderboards/following?page=1&page_size=10" \
 ### Get Following Leaderboard (Last 7 Days)
 ```bash
 curl -X GET "http://localhost:8000/leaderboards/following/last-7-days?page=1&page_size=10" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Create a Contest
+```bash
+curl -X POST "http://localhost:8000/contests" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "title": "Weekly Contest 1",
+    "description": "A weekly programming contest",
+    "start_date": "2024-02-01T10:00:00Z",
+    "end_date": "2024-02-01T12:00:00Z",
+    "contest_type": "public",
+    "problem_ids": [1, 2, 3, 4, 5]
+  }'
+```
+
+### Create a Private Contest
+```bash
+curl -X POST "http://localhost:8000/contests" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "title": "Private Contest 1",
+    "description": "A private contest requiring registration",
+    "start_date": "2024-02-01T10:00:00Z",
+    "end_date": "2024-02-01T12:00:00Z",
+    "contest_type": "private",
+    "problem_ids": [1, 2, 3, 4, 5]
+  }'
+```
+
+### Register for a Contest
+```bash
+curl -X POST "http://localhost:8000/contests/1/register" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get My Registration Status
+```bash
+curl -X GET "http://localhost:8000/contests/1/registration" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Approve a Registration (admin/owner)
+```bash
+curl -X PUT "http://localhost:8000/contests/1/registrations/1" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "status": "approved"
+  }'
+```
+
+### Get Registration Summary
+```bash
+curl -X GET "http://localhost:8000/contests/1/registrations/summary" \
+  -H "Authorization: Bearer <token>"
+```
+
+### List My Registrations
+```bash
+curl -X GET "http://localhost:8000/contests/my/registrations" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get Contest Details
+```bash
+curl -X GET "http://localhost:8000/contests/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Add Problems to a Contest
+```bash
+curl -X POST "http://localhost:8000/contests/1/problems" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "problem_ids": [6, 7, 8]
+  }'
+```
+
+### Reorder Problems in a Contest
+```bash
+curl -X PUT "http://localhost:8000/contests/1/problems/order" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "problems": [
+      {"problem_id": 1, "order": 2},
+      {"problem_id": 2, "order": 0},
+      {"problem_id": 3, "order": 1}
+    ]
+  }'
+```
+
+### Create a Contest Discussion
+```bash
+curl -X POST "http://localhost:8000/contests/1/discussions" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "title": "How was the contest?",
+    "content": "What did you think about today'\''s contest?"
+  }'
+```
+
+### Add a Comment to a Contest Discussion
+```bash
+curl -X POST "http://localhost:8000/contests/discussions/1/comments" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "content": "Great contest! I enjoyed problem 2."
+  }'
+```
+
+### Get Contest Discussion with Comments
+```bash
+curl -X GET "http://localhost:8000/contests/discussions/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Create a Contest Announcement (admin/owner)
+```bash
+curl -X POST "http://localhost:8000/contests/1/announcements" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "title": "Contest Delayed by 10 Minutes",
+    "content": "Due to technical difficulties, the contest will start 10 minutes later than scheduled. We apologize for the inconvenience.",
+    "is_published": true
+  }'
+```
+
+### List Contest Announcements
+```bash
+curl -X GET "http://localhost:8000/contests/1/announcements?page=1&page_size=10" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get a Specific Announcement
+```bash
+curl -X GET "http://localhost:8000/contests/1/announcements/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Update an Announcement (admin/owner)
+```bash
+curl -X PUT "http://localhost:8000/contests/1/announcements/1" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "title": "Contest Delayed by 15 Minutes",
+    "content": "Due to technical difficulties, the contest will start 15 minutes later than scheduled. We apologize for the inconvenience."
+  }'
+```
+
+### Delete an Announcement (admin/owner)
+```bash
+curl -X DELETE "http://localhost:8000/contests/1/announcements/1" \
   -H "Authorization: Bearer <token>"
 ```

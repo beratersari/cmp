@@ -3,6 +3,7 @@ from typing import Optional, List, Generic, TypeVar
 from datetime import datetime
 from app.models.user import UserRole
 from app.models.problem import SubmissionStatus, VoteType, VoteTargetType
+from app.models.contest import ContestType, ContestRegistrationStatus
 
 T = TypeVar('T')
 
@@ -395,5 +396,230 @@ class BookmarkOut(BaseModel):
     problem_id: int
     problem_title: Optional[str] = None
     created_at: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Contest Schemas
+class ContestBase(BaseModel):
+    title: str = Field(..., description="The title of the contest", example="Weekly Contest 1")
+    description: Optional[str] = Field(None, description="Description of the contest")
+    start_date: datetime = Field(..., description="Start date and time of the contest")
+    end_date: datetime = Field(..., description="End date and time of the contest")
+    contest_type: ContestType = Field(default=ContestType.PUBLIC, description="Type of contest: public, private, or archived")
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_end_date(cls, v: datetime, info) -> datetime:
+        start_date = info.data.get("start_date")
+        if start_date and v <= start_date:
+            raise ValueError("End date must be after start date")
+        return v
+
+
+class ContestCreate(ContestBase):
+    problem_ids: List[int] = Field(default=[], description="List of problem IDs to include in the contest")
+
+
+class ContestUpdate(BaseModel):
+    title: Optional[str] = Field(None, description="Updated title of the contest")
+    description: Optional[str] = Field(None, description="Updated description")
+    start_date: Optional[datetime] = Field(None, description="Updated start date and time")
+    end_date: Optional[datetime] = Field(None, description="Updated end date and time")
+    contest_type: Optional[ContestType] = Field(None, description="Updated contest type")
+
+    @field_validator("end_date")
+    @classmethod
+    def validate_end_date(cls, v: Optional[datetime], info) -> Optional[datetime]:
+        if v is not None:
+            start_date = info.data.get("start_date")
+            if start_date and v <= start_date:
+                raise ValueError("End date must be after start date")
+        return v
+
+
+class ContestProblemOut(BaseModel):
+    id: int = Field(..., description="Problem ID")
+    title: str = Field(..., description="Problem title")
+    difficulty: int = Field(..., description="Problem difficulty")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContestOut(BaseModel):
+    id: int = Field(..., description="The unique contest identifier")
+    title: str = Field(..., description="The title of the contest")
+    description: Optional[str] = Field(None, description="Description of the contest")
+    start_date: datetime = Field(..., description="Start date and time of the contest")
+    end_date: datetime = Field(..., description="End date and time of the contest")
+    contest_type: ContestType = Field(..., description="Type of contest: public, private, or archived")
+    owner_id: int = Field(..., description="The user ID of the contest owner")
+    created_by: Optional[str] = Field(None, description="The username that created the contest")
+    updated_by: Optional[str] = Field(None, description="The username that last updated the contest")
+    update_time: Optional[datetime] = Field(None, description="The last time the contest was updated")
+    created_at: datetime = Field(..., description="The creation timestamp of the contest")
+    problem_ids: List[int] = Field(default=[], description="List of problem IDs in the contest")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContestDetailOut(ContestOut):
+    problems: List[ContestProblemOut] = Field(default=[], description="List of problems in the contest")
+
+
+class ContestAddProblems(BaseModel):
+    problem_ids: List[int] = Field(..., description="List of problem IDs to add to the contest")
+
+
+class ContestRemoveProblems(BaseModel):
+    problem_ids: List[int] = Field(..., description="List of problem IDs to remove from the contest")
+
+
+class ContestProblemOrder(BaseModel):
+    problem_id: int = Field(..., description="Problem ID")
+    order: int = Field(..., description="Order position (0-indexed)")
+
+
+class ContestReorderProblems(BaseModel):
+    problems: List[ContestProblemOrder] = Field(..., description="List of problem IDs with their new order positions")
+
+
+# Contest Discussion Schemas
+class ContestDiscussionCreate(BaseModel):
+    title: str = Field(..., description="Discussion title", min_length=1, max_length=200)
+    content: str = Field(..., description="Discussion content", min_length=1)
+
+
+class ContestDiscussionUpdate(BaseModel):
+    title: Optional[str] = Field(None, description="Discussion title", min_length=1, max_length=200)
+    content: Optional[str] = Field(None, description="Discussion content", min_length=1)
+
+
+class ContestDiscussionOut(BaseModel):
+    id: int
+    contest_id: int
+    title: str
+    content: str
+    author_id: int
+    author_username: Optional[str]
+    is_published: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContestDiscussionCommentCreate(BaseModel):
+    content: str = Field(..., description="Comment content", min_length=1)
+    parent_id: Optional[int] = Field(None, description="Parent comment ID for replies")
+
+
+class ContestDiscussionCommentUpdate(BaseModel):
+    content: str = Field(..., description="Comment content", min_length=1)
+
+
+class ContestDiscussionCommentOut(BaseModel):
+    id: int
+    discussion_id: int
+    content: str
+    author_id: int
+    author_username: Optional[str]
+    parent_id: Optional[int]
+    is_published: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContestDiscussionTreeOut(BaseModel):
+    id: int
+    content: str
+    author_id: int
+    author_username: Optional[str]
+    discussion_id: int
+    parent_id: Optional[int]
+    is_published: bool
+    is_deleted: bool
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    replies: List["ContestDiscussionTreeOut"] = []
+
+
+class ContestDiscussionDetailOut(ContestDiscussionOut):
+    comments: List[ContestDiscussionTreeOut] = []
+
+
+# Contest Registration Schemas
+class ContestRegistrationCreate(BaseModel):
+    """Schema for registering to a contest."""
+    pass  # No additional fields needed - user_id comes from auth, contest_id from path
+
+
+class ContestRegistrationUpdate(BaseModel):
+    """Schema for updating registration status (admin/owner only)."""
+    status: ContestRegistrationStatus = Field(..., description="New registration status: pending, approved, or rejected")
+
+
+class ContestRegistrationOut(BaseModel):
+    """Schema for contest registration output."""
+    id: int = Field(..., description="Registration ID")
+    contest_id: int = Field(..., description="Contest ID")
+    user_id: int = Field(..., description="User ID")
+    username: Optional[str] = Field(None, description="Username of registered user")
+    status: ContestRegistrationStatus = Field(..., description="Registration status")
+    registered_at: datetime = Field(..., description="When the user registered")
+    approved_at: Optional[datetime] = Field(None, description="When the registration was approved")
+    approved_by: Optional[int] = Field(None, description="User ID who approved the registration")
+    approver_username: Optional[str] = Field(None, description="Username of approver")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContestRegistrationSummaryOut(BaseModel):
+    """Summary of registrations for a contest."""
+    contest_id: int = Field(..., description="Contest ID")
+    total_registrations: int = Field(..., description="Total number of registrations")
+    pending_count: int = Field(..., description="Number of pending registrations")
+    approved_count: int = Field(..., description="Number of approved registrations")
+    rejected_count: int = Field(..., description="Number of rejected registrations")
+
+
+class UserRegistrationOut(BaseModel):
+    """Schema for user's contest registration."""
+    contest_id: int = Field(..., description="Contest ID")
+    contest_title: str = Field(..., description="Contest title")
+    status: ContestRegistrationStatus = Field(..., description="Registration status")
+    registered_at: datetime = Field(..., description="When the user registered")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Contest Announcement Schemas
+class ContestAnnouncementCreate(BaseModel):
+    """Schema for creating a contest announcement."""
+    title: str = Field(..., description="Announcement title", min_length=1, max_length=200)
+    content: str = Field(..., description="Announcement content", min_length=1)
+    is_published: bool = Field(default=True, description="Whether the announcement is published")
+
+
+class ContestAnnouncementUpdate(BaseModel):
+    """Schema for updating a contest announcement."""
+    title: Optional[str] = Field(None, description="Announcement title", min_length=1, max_length=200)
+    content: Optional[str] = Field(None, description="Announcement content", min_length=1)
+    is_published: Optional[bool] = Field(None, description="Whether the announcement is published")
+
+
+class ContestAnnouncementOut(BaseModel):
+    """Schema for contest announcement output."""
+    id: int = Field(..., description="Announcement ID")
+    contest_id: int = Field(..., description="Contest ID")
+    title: str = Field(..., description="Announcement title")
+    content: str = Field(..., description="Announcement content")
+    author_id: int = Field(..., description="Author user ID")
+    author_username: Optional[str] = Field(None, description="Author username")
+    is_published: bool = Field(..., description="Whether the announcement is published")
+    created_at: datetime = Field(..., description="When the announcement was created")
+    updated_at: Optional[datetime] = Field(None, description="When the announcement was last updated")
 
     model_config = ConfigDict(from_attributes=True)
