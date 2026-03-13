@@ -26,6 +26,16 @@ from app.schemas import (
     ContestAnnouncementCreate,
     ContestAnnouncementUpdate,
     ContestAnnouncementOut,
+    SubmissionCreate,
+    SubmissionOut,
+    ContestManagerOut,
+    ContestTicketCreate,
+    ContestTicketUpdate,
+    ContestTicketOut,
+    ContestTicketSummaryOut,
+    ContestTicketStatusUpdate,
+    ContestTicketResponseCreate,
+    ContestTicketResponseOut,
 )
 from app.services.contest_service import ContestService
 from app.services.contest_discussion_service import ContestDiscussionService
@@ -1080,3 +1090,489 @@ def delete_contest_announcement(
     logger.info(f"Deleting announcement {announcement_id} by {current_user.username}")
     contest_service = ContestService(db)
     return contest_service.delete_announcement(contest_id, announcement_id, current_user)
+
+
+# ============================================================================
+# Contest Submission Endpoints
+# ============================================================================
+
+@router.post(
+    "/{contest_id}/problems/{problem_id}/submissions",
+    response_model=SubmissionOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Submit code for a contest problem",
+    description="""
+    Submit code for a problem within a contest.
+    
+    ### Authorization:
+    - For public contests: Any authenticated user.
+    - For private contests: Only registered (approved) users.
+    
+    ### Notes:
+    - Submissions made through this endpoint are marked as contest submissions.
+    - They will NOT appear when listing submissions for the problem outside of the contest.
+    - They WILL appear when listing submissions for the contest.
+    """
+)
+def create_contest_submission(
+    contest_id: int,
+    problem_id: int,
+    submission_create: SubmissionCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Creating contest submission: contest_id={contest_id}, problem_id={problem_id}, user={current_user.username}")
+    contest_service = ContestService(db)
+    submission = contest_service.create_contest_submission(
+        contest_id=contest_id,
+        problem_id=problem_id,
+        submission_create=submission_create,
+        current_user=current_user
+    )
+    return SubmissionOut.model_validate(submission)
+
+
+@router.get(
+    "/{contest_id}/submissions",
+    response_model=list[SubmissionOut],
+    summary="List all submissions for a contest (admin/owner only)",
+    description="""
+    List all submissions made during a contest.
+    
+    ### Authorization:
+    - **Admins**: Can view submissions for any contest.
+    - **Owners**: Can view submissions for their own contests.
+    
+    ### Notes:
+    - This only returns submissions made through the contest submission endpoint.
+    - Individual problem submissions are NOT included.
+    """
+)
+def list_contest_submissions(
+    contest_id: int,
+    problem_id: int | None = Query(default=None, description="Filter by problem ID"),
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR]))
+):
+    logger.info(f"Listing contest submissions: contest_id={contest_id}")
+    contest_service = ContestService(db)
+    return [
+        SubmissionOut.model_validate(s) 
+        for s in contest_service.list_contest_submissions(contest_id, current_user, problem_id=problem_id)
+    ]
+
+
+@router.get(
+    "/{contest_id}/my/submissions",
+    response_model=list[SubmissionOut],
+    summary="List my submissions for a contest",
+    description="""
+    List the current user's submissions made during a contest.
+    
+    ### Authorization:
+    - For public contests: Any authenticated user.
+    - For private contests: Only registered (approved) users.
+    
+    ### Notes:
+    - This only returns the current user's contest submissions.
+    """
+)
+def list_my_contest_submissions(
+    contest_id: int,
+    problem_id: int | None = Query(default=None, description="Filter by problem ID"),
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Listing my contest submissions: contest_id={contest_id}, user={current_user.username}")
+    contest_service = ContestService(db)
+    return [
+        SubmissionOut.model_validate(s) 
+        for s in contest_service.list_my_contest_submissions(contest_id, current_user, problem_id=problem_id)
+    ]
+
+
+@router.get(
+    "/{contest_id}/problems/{problem_id}/submissions",
+    response_model=list[SubmissionOut],
+    summary="List contest submissions for a specific problem (admin/owner only)",
+    description="""
+    List all submissions for a specific problem within a contest.
+    
+    ### Authorization:
+    - **Admins**: Can view submissions for any contest.
+    - **Owners**: Can view submissions for their own contests.
+    
+    ### Notes:
+    - This only returns contest submissions, not individual problem submissions.
+    """
+)
+def list_contest_problem_submissions(
+    contest_id: int,
+    problem_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR]))
+):
+    logger.info(f"Listing contest submissions for problem: contest_id={contest_id}, problem_id={problem_id}")
+    contest_service = ContestService(db)
+    return [
+        SubmissionOut.model_validate(s) 
+        for s in contest_service.list_contest_submissions(contest_id, current_user, problem_id=problem_id)
+    ]
+
+
+# ============================================================================
+# Contest Manager Endpoints (Team Collaboration)
+# ============================================================================
+
+@router.post(
+    "/{contest_id}/managers/{user_id}",
+    response_model=ContestManagerOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Add a manager to a contest (admin/owner only)",
+    description="""
+    Add a user as a manager to a contest.
+    
+    ### Authorization:
+    - **Admins**: Can add managers to any contest.
+    - **Owners**: Can add managers to their own contests.
+    
+    ### Manager Permissions:
+    Managers can:
+    - Edit contest details
+    - Add/remove problems
+    - Manage registrations
+    - Create/edit/delete announcements
+    
+    ### Notes:
+    - Cannot add the contest owner as a manager (they already have full access).
+    - Cannot add a user who is already a manager.
+    """
+)
+def add_contest_manager(
+    contest_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR]))
+):
+    logger.info(f"Adding manager: contest_id={contest_id}, user_id={user_id}, by={current_user.username}")
+    contest_service = ContestService(db)
+    return contest_service.add_contest_manager(contest_id, user_id, current_user)
+
+
+@router.delete(
+    "/{contest_id}/managers/{user_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Remove a manager from a contest (admin/owner only)",
+    description="""
+    Remove a manager from a contest.
+    
+    ### Authorization:
+    - **Admins**: Can remove managers from any contest.
+    - **Owners**: Can remove managers from their own contests.
+    """
+)
+def remove_contest_manager(
+    contest_id: int,
+    user_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR]))
+):
+    logger.info(f"Removing manager: contest_id={contest_id}, user_id={user_id}, by={current_user.username}")
+    contest_service = ContestService(db)
+    return contest_service.remove_contest_manager(contest_id, user_id, current_user)
+
+
+@router.get(
+    "/{contest_id}/managers",
+    response_model=list[ContestManagerOut],
+    summary="List contest managers",
+    description="""
+    List all managers for a contest.
+    
+    ### Authorization:
+    - Any authenticated user who can view the contest can list managers.
+    """
+)
+def list_contest_managers(
+    contest_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Listing managers: contest_id={contest_id}")
+    contest_service = ContestService(db)
+    return contest_service.list_contest_managers(contest_id, current_user)
+
+
+# ============================================================================
+# Contest Ticket Endpoints (Clarification System)
+# ============================================================================
+
+@router.post(
+    "/{contest_id}/tickets",
+    response_model=ContestTicketOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a ticket/clarification for a contest",
+    description="""
+    Create a ticket/clarification for a contest problem.
+    
+    This feature allows contestants to ask questions about problems during a contest,
+    similar to Codeforces and other competitive programming platforms.
+    
+    ### Authorization:
+    - For public contests: Any authenticated user.
+    - For private contests: Only registered (approved) users.
+    
+    ### Fields:
+    - **title**: Ticket title (required, 1-200 characters)
+    - **content**: The question/clarification (required)
+    - **problem_id**: Problem ID this ticket is about (optional)
+    - **is_public**: Whether this ticket is visible to all contestants (default: false)
+    
+    ### Ticket Status:
+    - **open**: Ticket is awaiting response
+    - **answered**: Ticket has been answered by staff
+    - **closed**: Ticket is closed
+    """
+)
+def create_contest_ticket(
+    contest_id: int,
+    ticket_create: ContestTicketCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Creating ticket: contest_id={contest_id}, user={current_user.username}")
+    contest_service = ContestService(db)
+    return contest_service.create_ticket(contest_id, ticket_create, current_user)
+
+
+@router.get(
+    "/{contest_id}/tickets",
+    response_model=PaginatedResponse[ContestTicketSummaryOut],
+    summary="List tickets for a contest",
+    description="""
+    List tickets/clarifications for a contest.
+    
+    ### Visibility:
+    - Regular users see their own tickets and public tickets.
+    - Managers (admin/owner/managers) see all tickets.
+    
+    ### Filters:
+    - `status`: Filter by status (open, answered, closed)
+    - `problem_id`: Filter by problem ID
+    
+    ### Pagination:
+    - Use `page` and `page_size` query parameters.
+    """
+)
+def list_contest_tickets(
+    contest_id: int,
+    status_filter: str | None = Query(default=None, alias="status", description="Filter by status: open, answered, closed"),
+    problem_id: int | None = Query(default=None, description="Filter by problem ID"),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Listing tickets: contest_id={contest_id}")
+    contest_service = ContestService(db)
+    return contest_service.list_tickets(
+        contest_id, current_user, 
+        status_filter=status_filter, 
+        problem_id=problem_id,
+        page=page, 
+        page_size=page_size
+    )
+
+
+@router.get(
+    "/tickets/my",
+    response_model=PaginatedResponse[ContestTicketSummaryOut],
+    summary="List my tickets across all contests",
+    description="""
+    List all tickets created by the current user across all contests.
+    
+    ### Filters:
+    - `status`: Filter by status (open, answered, closed)
+    """
+)
+def list_my_tickets(
+    status_filter: str | None = Query(default=None, alias="status", description="Filter by status: open, answered, closed"),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page"),
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Listing my tickets: user={current_user.username}")
+    contest_service = ContestService(db)
+    return contest_service.list_my_tickets(
+        current_user,
+        status_filter=status_filter,
+        page=page,
+        page_size=page_size
+    )
+
+
+@router.get(
+    "/tickets/{ticket_id}",
+    response_model=ContestTicketOut,
+    summary="Get a specific ticket",
+    description="""
+    Get a specific ticket by ID with all responses.
+    
+    ### Visibility:
+    - Users can see their own tickets.
+    - Users can see public tickets.
+    - Managers can see all tickets.
+    """
+)
+def get_contest_ticket(
+    ticket_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Getting ticket: ticket_id={ticket_id}")
+    contest_service = ContestService(db)
+    return contest_service.get_ticket(ticket_id, current_user)
+
+
+@router.put(
+    "/tickets/{ticket_id}",
+    response_model=ContestTicketOut,
+    summary="Update a ticket",
+    description="""
+    Update a ticket's content or visibility.
+    
+    ### Authorization:
+    - **Ticket author**: Can update title, content, and visibility.
+    - **Managers**: Can only change visibility (is_public).
+    """
+)
+def update_contest_ticket(
+    ticket_id: int,
+    ticket_update: ContestTicketUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Updating ticket: ticket_id={ticket_id}, user={current_user.username}")
+    contest_service = ContestService(db)
+    return contest_service.update_ticket(ticket_id, ticket_update, current_user)
+
+
+@router.put(
+    "/tickets/{ticket_id}/status",
+    response_model=ContestTicketOut,
+    summary="Update ticket status",
+    description="""
+    Update a ticket's status.
+    
+    ### Authorization:
+    - **Managers**: Can change ticket status to any value.
+    - **Ticket author**: Can only close their own tickets.
+    
+    ### Status Values:
+    - `open`: Ticket is awaiting response
+    - `answered`: Ticket has been answered by staff
+    - `closed`: Ticket is closed
+    """
+)
+def update_contest_ticket_status(
+    ticket_id: int,
+    status_update: ContestTicketStatusUpdate,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Updating ticket status: ticket_id={ticket_id}, status={status_update.status}")
+    contest_service = ContestService(db)
+    return contest_service.update_ticket_status(ticket_id, status_update.status, current_user)
+
+
+@router.delete(
+    "/tickets/{ticket_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete a ticket",
+    description="""
+    Delete a ticket.
+    
+    ### Authorization:
+    - **Ticket author**: Can delete their own tickets.
+    - **Managers**: Can delete any ticket.
+    """
+)
+def delete_contest_ticket(
+    ticket_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Deleting ticket: ticket_id={ticket_id}, user={current_user.username}")
+    contest_service = ContestService(db)
+    return contest_service.delete_ticket(ticket_id, current_user)
+
+
+@router.post(
+    "/tickets/{ticket_id}/responses",
+    response_model=ContestTicketResponseOut,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a response to a ticket",
+    description="""
+    Create a response to a ticket (managers only).
+    
+    ### Authorization:
+    - Only contest managers (admin/owner/managers) can respond to tickets.
+    
+    ### Notes:
+    - When a response is created, the ticket status is automatically changed to "answered".
+    """
+)
+def create_ticket_response(
+    ticket_id: int,
+    response_create: ContestTicketResponseCreate,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR]))
+):
+    logger.info(f"Creating ticket response: ticket_id={ticket_id}, user={current_user.username}")
+    contest_service = ContestService(db)
+    return contest_service.create_ticket_response(ticket_id, response_create, current_user)
+
+
+@router.put(
+    "/ticket-responses/{response_id}",
+    response_model=ContestTicketResponseOut,
+    summary="Update a ticket response",
+    description="""
+    Update a ticket response.
+    
+    ### Authorization:
+    - Only the responder can update their own response.
+    """
+)
+def update_ticket_response(
+    response_id: int,
+    content: str = Query(..., description="Updated response content"),
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Updating ticket response: response_id={response_id}")
+    contest_service = ContestService(db)
+    return contest_service.update_ticket_response(response_id, content, current_user)
+
+
+@router.delete(
+    "/ticket-responses/{response_id}",
+    status_code=status.HTTP_200_OK,
+    summary="Delete a ticket response",
+    description="""
+    Delete a ticket response.
+    
+    ### Authorization:
+    - The responder can delete their own response.
+    - Managers can delete any response.
+    """
+)
+def delete_ticket_response(
+    response_id: int,
+    db: Session = Depends(get_db),
+    current_user=Depends(RoleChecker([UserRole.ADMIN, UserRole.CREATOR, UserRole.USER]))
+):
+    logger.info(f"Deleting ticket response: response_id={response_id}")
+    contest_service = ContestService(db)
+    return contest_service.delete_ticket_response(response_id, current_user)

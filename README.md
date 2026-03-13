@@ -77,6 +77,9 @@ On startup, the application creates:
 - **Contest announcements for each contest**.
 - **Contest discussions with comments for each contest**.
 - **Contest registrations for private contests (some approved, some pending)**.
+- **Contest submissions for each contest (mix of on-time and late submissions)**.
+- **Contest managers for team collaboration**.
+- **Contest tickets with responses (clarification system)**.
 
 ## Authentication and Roles
 
@@ -110,9 +113,39 @@ A `Problem` contains:
 - **Testcases** (array of `{input, output}` pairs)
 - **Tags** (list of tag names)
 - **Editorial** (detailed explanation and reference code solution)
-- **Submissions** (each submission tracks `user_id`, `username`, `programming_language`, `code`, `status`, and `submission_time`)
+- **Submissions** (each submission tracks `user_id`, `username`, `programming_language`, `code`, `status`, `submission_time`, and contest-related fields)
 - **Visibility**: Published/Unpublished, Public/Private
 - **Allowed Users** (for private problems)
+
+## Submission Entity
+
+A `Submission` contains:
+- **problem_id** (required)
+- **user_id** (required)
+- **username** (required)
+- **programming_language** (required)
+- **code** (required)
+- **status** (PENDING, ACCEPTED, WRONG_ANSWER, etc.)
+- **submission_time** (timestamp)
+- **contest_id** (optional) - The contest ID if submitted during a contest
+- **is_contest_submission** (boolean) - Whether this was submitted via contest endpoint
+- **is_late_submission** (boolean) - Whether this contest submission was made after contest end time
+
+### Submission Separation
+
+Submissions are separated into two categories:
+
+1. **Individual Problem Submissions**: Made via `POST /problems/{problem_id}/submissions`
+   - These are NOT associated with any contest
+   - When listing submissions for a problem, contest submissions are excluded by default
+
+2. **Contest Submissions**: Made via `POST /contests/{contest_id}/problems/{problem_id}/submissions`
+   - These are linked to a specific contest via `contest_id`
+   - Marked with `is_contest_submission=True`
+   - If submitted after contest end time, marked with `is_late_submission=True`
+   - When listing submissions for a contest, only contest submissions are shown
+
+This separation ensures that contest submissions don't pollute individual problem submission lists, similar to Codeforces and LeetCode.
 
 ## User Education
 
@@ -219,6 +252,80 @@ Admins and contest creators can create announcements for contests:
 - Only admins and contest owners can create/edit/delete announcements
 - Regular users can only see published announcements
 - Announcements are ordered by creation date (newest first)
+
+#### Contest Submissions
+Contest submissions are separated from individual problem submissions:
+
+- `POST /contests/{contest_id}/problems/{problem_id}/submissions` - Submit code for a contest problem
+- `GET /contests/{contest_id}/submissions` - List all contest submissions (admin/owner only)
+- `GET /contests/{contest_id}/my/submissions` - List my contest submissions
+- `GET /contests/{contest_id}/problems/{problem_id}/submissions` - List contest submissions for a specific problem (admin/owner only)
+
+**Submission Features:**
+- Contest submissions are linked to the contest via `contest_id`
+- Marked with `is_contest_submission=True`
+- If submitted after contest end time, marked with `is_late_submission=True`
+- Contest submissions do NOT appear when listing submissions for a problem outside the contest
+- Individual problem submissions do NOT appear when listing contest submissions
+
+#### Contest Managers (Team Collaboration)
+Contest managers allow team collaboration on contests. Managers can be added by owners/admins and have full edit permissions:
+
+- `POST /contests/{contest_id}/managers/{user_id}` - Add a manager to a contest (admin/owner only)
+- `DELETE /contests/{contest_id}/managers/{user_id}` - Remove a manager from a contest (admin/owner only)
+- `GET /contests/{contest_id}/managers` - List all managers for a contest
+
+**Manager Permissions:**
+Managers have the same permissions as owners (except adding/removing other managers):
+- View contest problems (including private contests)
+- Edit contest details (title, description, dates, type)
+- Add/remove problems from the contest
+- Reorder problems
+- View and manage registrations (approve/reject)
+- Create/edit/delete announcements
+- View unpublished announcements
+- View all contest submissions
+
+**Notes:**
+- Only contest owners and admins can add/remove managers
+- Cannot add the contest owner as a manager (they already have full access)
+- Cannot add a user who is already a manager
+
+#### Contest Tickets (Clarification System)
+Contest tickets allow contestants to ask questions about problems during a contest, similar to Codeforces and other competitive programming platforms:
+
+- `POST /contests/{contest_id}/tickets` - Create a ticket/clarification
+- `GET /contests/{contest_id}/tickets` - List tickets for a contest (paginated)
+- `GET /contests/tickets/my` - List my tickets across all contests
+- `GET /contests/tickets/{ticket_id}` - Get a specific ticket with responses
+- `PUT /contests/tickets/{ticket_id}` - Update a ticket
+- `PUT /contests/tickets/{ticket_id}/status` - Update ticket status
+- `DELETE /contests/tickets/{ticket_id}` - Delete a ticket
+- `POST /contests/tickets/{ticket_id}/responses` - Create a response (managers only)
+- `PUT /contests/ticket-responses/{response_id}` - Update a response
+- `DELETE /contests/ticket-responses/{response_id}` - Delete a response
+
+**Ticket Fields:**
+- **title**: Ticket title (required, 1-200 characters)
+- **content**: The question/clarification (required)
+- **problem_id**: Problem ID this ticket is about (optional)
+- **is_public**: Whether this ticket is visible to all contestants (default: false)
+
+**Ticket Status:**
+- `open`: Ticket is awaiting response
+- `answered`: Ticket has been answered by staff
+- `closed`: Ticket is closed
+
+**Visibility Rules:**
+- Regular users see their own tickets and public tickets
+- Managers (admin/owner/managers) see all tickets
+- When a manager responds to a ticket, its status is automatically changed to "answered"
+
+**Authorization:**
+- Any registered user can create tickets
+- Ticket authors can update their own tickets and close them
+- Only managers can respond to tickets and change ticket status
+- Ticket authors and managers can delete tickets
 
 ### Contest Discussions
 Discussions attached to specific contests (LeetCode-style):
@@ -740,5 +847,62 @@ curl -X PUT "http://localhost:8000/contests/1/announcements/1" \
 ### Delete an Announcement (admin/owner)
 ```bash
 curl -X DELETE "http://localhost:8000/contests/1/announcements/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Create a Contest Ticket (Clarification)
+```bash
+curl -X POST "http://localhost:8000/contests/1/tickets" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "title": "Clarification on input constraints",
+    "content": "The problem states that n can be up to 10^5, but the sample input has n=10^6. Which one is correct?",
+    "problem_id": 1,
+    "is_public": false
+  }'
+```
+
+### List Contest Tickets
+```bash
+curl -X GET "http://localhost:8000/contests/1/tickets?page=1&page_size=10" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get a Specific Ticket
+```bash
+curl -X GET "http://localhost:8000/contests/tickets/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Respond to a Ticket (managers only)
+```bash
+curl -X POST "http://localhost:8000/contests/tickets/1/responses" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "content": "Thank you for your question. The constraint should be 1 <= n <= 10^6. We have updated the problem statement accordingly."
+  }'
+```
+
+### Update Ticket Status
+```bash
+curl -X PUT "http://localhost:8000/contests/tickets/1/status" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "status": "closed"
+  }'
+```
+
+### Add a Manager to a Contest
+```bash
+curl -X POST "http://localhost:8000/contests/1/managers/2" \
+  -H "Authorization: Bearer <token>"
+```
+
+### List Contest Managers
+```bash
+curl -X GET "http://localhost:8000/contests/1/managers" \
   -H "Authorization: Bearer <token>"
 ```

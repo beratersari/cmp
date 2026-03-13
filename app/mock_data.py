@@ -174,6 +174,15 @@ def seed_mock_data(db: Session):
     # Create contest announcements
     seed_contest_announcements(contest_service, contest_service.contest_repo, admin)
 
+    # Create contest submissions
+    seed_contest_submissions(contest_service, contest_service.contest_repo, problem_repo, users, admin)
+
+    # Create contest managers (team collaboration)
+    seed_contest_managers(contest_service, contest_service.contest_repo, users, admin)
+
+    # Create contest tickets (clarification system)
+    seed_contest_tickets(contest_service, contest_service.contest_repo, problem_repo, users, admin)
+
 
 def seed_forum_data(forum_service: ForumService, users, admin):
     """
@@ -894,4 +903,339 @@ def seed_contest_announcements(contest_service, contest_repo, admin):
                 pass
     
     print(f"Created {total_announcements} contest announcements")
+
+
+def seed_contest_submissions(contest_service, contest_repo, problem_repo, users, admin):
+    """
+    Seed contest submissions for contests.
+    Creates submissions for past contests with a mix of on-time and late submissions.
+    Always creates submissions if past contests exist without submissions.
+    """
+    from datetime import datetime, timezone
+    import random
+    
+    # Get all contests using the repository to get full details
+    contests = contest_repo.list_contests(limit=100)[0]  # Get raw contest objects
+    
+    if not contests:
+        return
+    
+    # Get the db session from contest_repo
+    db = contest_repo.db
+    
+    # Check if any past contest has submissions
+    past_contests = []
+    now = datetime.now(timezone.utc)
+    for contest in contests:
+        contest_start = contest.start_date
+        if contest_start.tzinfo is None:
+            contest_start = contest_start.replace(tzinfo=timezone.utc)
+        if contest_start < now:
+            past_contests.append(contest)
+    
+    if not past_contests:
+        print("No past contests found, skipping contest submissions seed")
+        return
+    
+    # Get all users except admin
+    regular_users = [u for u in users if u.role == UserRole.USER]
+    creators = [u for u in users if u.role == UserRole.CREATOR]
+    all_users = regular_users + creators
+    
+    if not all_users:
+        return
+    
+    total_submissions = 0
+    
+    for contest in contests:
+        # Only create submissions for past contests
+        now = datetime.now(timezone.utc)
+        contest_start = contest.start_date
+        contest_end = contest.end_date
+        
+        # Make sure we have timezone-aware datetimes
+        if contest_start.tzinfo is None:
+            contest_start = contest_start.replace(tzinfo=timezone.utc)
+        if contest_end.tzinfo is None:
+            contest_end = contest_end.replace(tzinfo=timezone.utc)
+            
+        if contest_start > now:
+            continue  # Skip future contests
+        
+        # Get problem IDs for this contest - try multiple ways
+        problem_ids = []
+        
+        # Method 1: Via contest_problems relationship (if loaded)
+        try:
+            problem_ids = [cp.problem_id for cp in contest.contest_problems]
+        except:
+            pass
+        
+        # Method 2: Via ContestProblem table query
+        if not problem_ids:
+            from app.models.contest import ContestProblem
+            try:
+                cps = db.query(ContestProblem).filter(ContestProblem.contest_id == contest.id).all()
+                problem_ids = [cp.problem_id for cp in cps]
+            except:
+                pass
+        
+        # Method 3: Via problem_ids property if exists
+        if not problem_ids:
+            try:
+                problem_ids = list(contest.problem_ids) if hasattr(contest, 'problem_ids') else []
+            except:
+                pass
+        
+        if not problem_ids:
+            print(f"Contest {contest.id} has no problems, skipping")
+            continue
+        
+        # Fetch problems from repository
+        contest_problems = []
+        for pid in problem_ids:
+            try:
+                problem = problem_repo.get_problem_by_id(pid)
+                if problem:
+                    contest_problems.append(problem)
+            except:
+                pass
+        
+        if not contest_problems:
+            print(f"Contest {contest.id} has no valid problems, skipping")
+            continue
+        
+        print(f"Contest {contest.id} has {len(contest_problems)} problems")
+        
+        # Create 5-10 submissions per contest
+        num_submissions = random.randint(5, 10)
+        
+        for i in range(num_submissions):
+            user = all_users[i % len(all_users)]
+            problem = contest_problems[i % len(contest_problems)]
+            
+            try:
+                # Determine if this is a late submission
+                # 80% on-time, 20% late
+                is_late = random.random() < 0.2
+                
+                # Create submission via repository directly
+                submission = problem_repo.create_submission(
+                    problem_id=problem.id,
+                    submission_create=SubmissionCreate(
+                        programming_language=random.choice(["python", "cpp", "java", "javascript"]),
+                        code=f"// Contest submission for {problem.title}\ndef solve():\n    pass"
+                    ),
+                    user_id=user.id,
+                    username=user.username,
+                    contest_id=contest.id,
+                    is_contest_submission=True,
+                    is_late_submission=is_late
+                )
+                
+                # Randomly set some submissions to ACCEPTED
+                if random.random() < 0.3:
+                    problem_repo.update_submission_status(
+                        submission,
+                        SubmissionStatus.ACCEPTED.value,
+                        updated_by="system"
+                    )
+                
+                total_submissions += 1
+            except Exception as e:
+                pass
+    
+    print(f"Created {total_submissions} contest submissions")
+
+
+def seed_contest_managers(contest_service, contest_repo, users, admin):
+    """
+    Seed contest managers for team collaboration.
+    Adds managers to contests so they can collaborate on editing.
+    """
+    # Get all contests
+    contests = contest_repo.list_contests(limit=100)[0]
+    
+    if not contests:
+        return
+    
+    # Get users who can be managers (creators and regular users, not admin)
+    potential_managers = [u for u in users if u.id != admin.id]
+    
+    if not potential_managers:
+        return
+    
+    total_managers = 0
+    
+    for contest in contests[:3]:  # Add managers to first 3 contests
+        # Check if already has managers
+        existing_managers = contest_repo.list_contest_managers(contest.id)
+        if existing_managers:
+            continue
+        
+        # Add 1-2 managers per contest
+        num_managers = min(2, len(potential_managers))
+        
+        for i in range(num_managers):
+            manager_user = potential_managers[i % len(potential_managers)]
+            
+            # Don't add owner as manager
+            if manager_user.id == contest.owner_id:
+                continue
+            
+            try:
+                contest_repo.add_manager_to_contest(
+                    contest_id=contest.id,
+                    user_id=manager_user.id,
+                    added_by=admin.id
+                )
+                total_managers += 1
+            except Exception:
+                pass
+    
+    print(f"Created {total_managers} contest managers")
+
+
+def seed_contest_tickets(contest_service, contest_repo, problem_repo, users, admin):
+    """
+    Seed contest tickets/clarifications for contests.
+    Creates tickets with various statuses and responses.
+    """
+    from app.models.contest import ContestTicketStatus, ContestProblem
+    from app.repositories.contest_announcement_repository import ContestTicketRepository
+    import random
+    
+    # Get all contests
+    contests = contest_repo.list_contests(limit=100)[0]
+    
+    if not contests:
+        return
+    
+    # Get the db session from contest_repo
+    db = contest_repo.db
+    ticket_repo = ContestTicketRepository(db)
+    
+    # Get users who can create tickets (regular users and creators)
+    regular_users = [u for u in users if u.role == UserRole.USER]
+    creators = [u for u in users if u.role == UserRole.CREATOR]
+    all_users = regular_users + creators
+    
+    if not all_users:
+        return
+    
+    # Ticket templates
+    ticket_templates = [
+        {
+            "title": "Clarification on input constraints",
+            "content": "The problem states that n can be up to 10^5, but the sample input has n=10^6. Which one is correct?",
+        },
+        {
+            "title": "Question about time limit",
+            "content": "What is the time limit for this problem? Is it 1 second or 2 seconds?",
+        },
+        {
+            "title": "Ambiguous problem statement",
+            "content": "The problem statement mentions 'adjacent elements' but doesn't clarify if it's horizontal adjacency only or both horizontal and vertical. Could you please clarify?",
+        },
+        {
+            "title": "Output format question",
+            "content": "Should the output be printed on a single line or can it be on multiple lines? The problem statement is not clear about this.",
+        },
+        {
+            "title": "Edge case clarification",
+            "content": "What should the output be when the input array is empty? Should we print '0' or nothing at all?",
+        },
+        {
+            "title": "Memory limit question",
+            "content": "What is the memory limit for this problem? I'm getting Memory Limit Exceeded with my solution.",
+        },
+        {
+            "title": "Multiple test cases handling",
+            "content": "Does the problem have multiple test cases? If so, how should we handle input/output for them?",
+        },
+        {
+            "title": "Integer overflow concern",
+            "content": "The intermediate results might exceed 32-bit integer range. Should we use 64-bit integers or arbitrary precision?",
+        },
+    ]
+    
+    # Response templates for managers
+    response_templates = [
+        "Thank you for your question. The constraint should be 1 <= n <= 10^6. We've updated the problem statement accordingly.",
+        "The time limit for this problem is 2 seconds per test case.",
+        "Adjacent elements refer to horizontally adjacent elements only. We apologize for the confusion.",
+        "The output should be on a single line, separated by spaces.",
+        "For an empty array, please output '0'.",
+        "The memory limit is 256 MB.",
+        "Yes, there are multiple test cases. Please read until EOF.",
+        "Yes, you should use 64-bit integers (long long in C++, int64 in Python).",
+    ]
+    
+    total_tickets = 0
+    total_responses = 0
+    
+    for contest in contests:
+        # Get problem IDs for this contest
+        problem_ids = []
+        try:
+            cps = db.query(ContestProblem).filter(ContestProblem.contest_id == contest.id).all()
+            problem_ids = [cp.problem_id for cp in cps]
+        except:
+            pass
+        
+        if not problem_ids:
+            continue
+        
+        # Create 3-5 tickets per contest
+        num_tickets = random.randint(3, 5)
+        
+        for i in range(num_tickets):
+            user = all_users[i % len(all_users)]
+            template = ticket_templates[i % len(ticket_templates)]
+            problem_id = problem_ids[i % len(problem_ids)] if problem_ids else None
+            
+            # Determine ticket status and visibility
+            # 40% open, 40% answered, 20% closed
+            status_rand = random.random()
+            if status_rand < 0.4:
+                ticket_status = ContestTicketStatus.OPEN.value
+            elif status_rand < 0.8:
+                ticket_status = ContestTicketStatus.ANSWERED.value
+            else:
+                ticket_status = ContestTicketStatus.CLOSED.value
+            
+            # 30% public, 70% private
+            is_public = random.random() < 0.3
+            
+            try:
+                ticket = ticket_repo.create_ticket(
+                    contest_id=contest.id,
+                    user_id=user.id,
+                    title=template["title"],
+                    content=template["content"],
+                    problem_id=problem_id,
+                    is_public=is_public
+                )
+                
+                # Update status if not open
+                if ticket_status != ContestTicketStatus.OPEN.value:
+                    ticket = ticket_repo.update_ticket_status(ticket, ticket_status)
+                
+                total_tickets += 1
+                
+                # Add response for answered/closed tickets
+                if ticket_status in [ContestTicketStatus.ANSWERED.value, ContestTicketStatus.CLOSED.value]:
+                    try:
+                        response = ticket_repo.create_response(
+                            ticket_id=ticket.id,
+                            responder_id=admin.id,  # Admin responds
+                            content=response_templates[i % len(response_templates)]
+                        )
+                        total_responses += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    
+    print(f"Created {total_tickets} contest tickets with {total_responses} responses")
 

@@ -2,7 +2,7 @@ from typing import Optional
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
-from app.models.contest import Contest, ContestProblem, ContestType
+from app.models.contest import Contest, ContestProblem, ContestType, ContestManager
 from app.models.problem import Problem
 from app.schemas import ContestCreate, ContestUpdate
 from app.core.config import get_logger
@@ -194,3 +194,42 @@ class ContestRepository:
     def delete_contest(self, contest: Contest):
         self.db.delete(contest)
         self.db.commit()
+
+    # Contest Manager methods
+    def get_contest_manager(self, contest_id: int, user_id: int) -> Optional[ContestManager]:
+        """Get a specific contest manager entry."""
+        return self.db.query(ContestManager).filter(
+            ContestManager.contest_id == contest_id,
+            ContestManager.user_id == user_id
+        ).first()
+
+    def add_manager_to_contest(self, contest_id: int, user_id: int, added_by: int) -> ContestManager:
+        """Add a user as a manager to a contest."""
+        manager = ContestManager(
+            contest_id=contest_id,
+            user_id=user_id,
+            added_by=added_by
+        )
+        self.db.add(manager)
+        self.db.commit()
+        self.db.refresh(manager)
+        return manager
+
+    def remove_manager_from_contest(self, contest_id: int, user_id: int) -> bool:
+        """Remove a manager from a contest."""
+        manager = self.get_contest_manager(contest_id, user_id)
+        if manager:
+            self.db.delete(manager)
+            self.db.commit()
+            return True
+        return False
+
+    def list_contest_managers(self, contest_id: int) -> list[ContestManager]:
+        """List all managers for a contest."""
+        return self.db.query(ContestManager).filter(
+            ContestManager.contest_id == contest_id
+        ).all()
+
+    def is_user_manager(self, contest_id: int, user_id: int) -> bool:
+        """Check if a user is a manager of a contest."""
+        return self.get_contest_manager(contest_id, user_id) is not None

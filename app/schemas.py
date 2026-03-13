@@ -228,6 +228,10 @@ class SubmissionOut(SubmissionBase):
     updated_by: Optional[str] = Field(None, description="The username that last updated the submission")
     update_time: Optional[datetime] = Field(None, description="The last time the submission was updated")
     submission_time: datetime = Field(..., description="The timestamp when the submission was made")
+    # Contest-related fields to separate contest submissions from individual problem submissions
+    contest_id: Optional[int] = Field(None, description="The contest ID if this is a contest submission")
+    is_contest_submission: bool = Field(False, description="Whether this submission was made during a contest")
+    is_late_submission: bool = Field(False, description="Whether this contest submission was made after contest end time")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -621,5 +625,100 @@ class ContestAnnouncementOut(BaseModel):
     is_published: bool = Field(..., description="Whether the announcement is published")
     created_at: datetime = Field(..., description="When the announcement was created")
     updated_at: Optional[datetime] = Field(None, description="When the announcement was last updated")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Contest Manager Schemas
+class ContestManagerOut(BaseModel):
+    """Schema for contest manager output."""
+    id: int = Field(..., description="Manager entry ID")
+    contest_id: int = Field(..., description="Contest ID")
+    user_id: int = Field(..., description="Manager user ID")
+    username: Optional[str] = Field(None, description="Manager username")
+    added_by: int = Field(..., description="User ID who added this manager")
+    adder_username: Optional[str] = Field(None, description="Username of user who added this manager")
+    added_at: datetime = Field(..., description="When the manager was added")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Contest Ticket Schemas
+class ContestTicketCreate(BaseModel):
+    """Schema for creating a contest ticket."""
+    title: str = Field(..., description="Ticket title", min_length=1, max_length=200)
+    content: str = Field(..., description="Ticket content/question", min_length=1)
+    problem_id: Optional[int] = Field(None, description="Problem ID this ticket is about (optional)")
+    is_public: bool = Field(default=False, description="Whether this ticket is visible to all contestants")
+
+
+class ContestTicketUpdate(BaseModel):
+    """Schema for updating a contest ticket."""
+    title: Optional[str] = Field(None, description="Ticket title", min_length=1, max_length=200)
+    content: Optional[str] = Field(None, description="Ticket content/question", min_length=1)
+    is_public: Optional[bool] = Field(None, description="Whether this ticket is visible to all contestants")
+
+
+class ContestTicketStatusUpdate(BaseModel):
+    """Schema for updating ticket status."""
+    status: str = Field(..., description="New status: open, answered, or closed")
+
+
+class ContestTicketResponseCreate(BaseModel):
+    """Schema for creating a ticket response."""
+    content: str = Field(..., description="Response content", min_length=1)
+
+
+class ContestTicketResponseUpdate(BaseModel):
+    """Schema for updating a ticket response."""
+    content: str = Field(..., description="Response content", min_length=1)
+
+
+class ContestTicketResponseOut(BaseModel):
+    """Schema for ticket response output."""
+    id: int = Field(..., description="Response ID")
+    ticket_id: int = Field(..., description="Ticket ID")
+    responder_id: int = Field(..., description="Responder user ID")
+    responder_username: Optional[str] = Field(None, description="Responder username")
+    content: str = Field(..., description="Response content")
+    created_at: datetime = Field(..., description="When the response was created")
+    updated_at: Optional[datetime] = Field(None, description="When the response was last updated")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContestTicketOut(BaseModel):
+    """Schema for contest ticket output."""
+    id: int = Field(..., description="Ticket ID")
+    contest_id: int = Field(..., description="Contest ID")
+    problem_id: Optional[int] = Field(None, description="Problem ID")
+    problem_title: Optional[str] = Field(None, description="Problem title")
+    user_id: int = Field(..., description="User ID who created the ticket")
+    username: Optional[str] = Field(None, description="Username of ticket creator")
+    title: str = Field(..., description="Ticket title")
+    content: str = Field(..., description="Ticket content")
+    status: str = Field(..., description="Ticket status: open, answered, closed")
+    is_public: bool = Field(..., description="Whether ticket is visible to all contestants")
+    created_at: datetime = Field(..., description="When the ticket was created")
+    updated_at: Optional[datetime] = Field(None, description="When the ticket was last updated")
+    responses: List[ContestTicketResponseOut] = Field(default=[], description="List of responses")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContestTicketSummaryOut(BaseModel):
+    """Schema for contest ticket summary (without responses)."""
+    id: int = Field(..., description="Ticket ID")
+    contest_id: int = Field(..., description="Contest ID")
+    problem_id: Optional[int] = Field(None, description="Problem ID")
+    problem_title: Optional[str] = Field(None, description="Problem title")
+    user_id: int = Field(..., description="User ID who created the ticket")
+    username: Optional[str] = Field(None, description="Username of ticket creator")
+    title: str = Field(..., description="Ticket title")
+    status: str = Field(..., description="Ticket status: open, answered, closed")
+    is_public: bool = Field(..., description="Whether ticket is visible to all contestants")
+    created_at: datetime = Field(..., description="When the ticket was created")
+    updated_at: Optional[datetime] = Field(None, description="When the ticket was last updated")
+    response_count: int = Field(0, description="Number of responses")
 
     model_config = ConfigDict(from_attributes=True)
