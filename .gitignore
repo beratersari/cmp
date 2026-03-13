@@ -12,3 +12,4 @@ ENV/
 .idea/
 codeforces_clone.db
 app.log
+.DS_Store
