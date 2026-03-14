@@ -4,13 +4,19 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 from app.repositories.problem_repository import ProblemRepository
 from app.repositories.user_repository import UserRepository
+from app.repositories.contest_repository import ContestRepository
+from fastapi import HTTPException, status
 from app.schemas import (
     LeaderboardEntryOut, CreatorLeaderboardEntryOut, 
-    UserSubmissionHistoryOut, SubmissionHistoryEntry, UserStreakOut, StreakInfo
+    UserSubmissionHistoryOut, SubmissionHistoryEntry, UserStreakOut, StreakInfo,
+    ContestLeaderboardEntryOut, TeamContestLeaderboardEntryOut, TeamContestProblemDetail
 )
 from app.models.problem import SubmissionStatus
 from app.models.user import User
 from app.core.config import get_logger
+
+# Penalty in minutes for each wrong submission before accepted
+CONTEST_PENALTY_MINUTES = 15
 
 logger = get_logger(__name__)
 
@@ -276,4 +282,413 @@ class LeaderboardService:
             "has_next": has_next,
             "has_prev": has_prev,
             "following_count": len(current_user.following)
+        }
+
+    def get_contest_leaderboard(
+        self,
+        contest_id: int,
+        page: int = 1,
+        page_size: int = 20
+    ):
+        """
+        Generate a leaderboard for a specific contest with ICPC-style scoring.
+        
+        Scoring rules:
+        - Users are ranked by number of problems solved (descending)
+        - Ties are broken by total penalty time (ascending)
+        - Penalty time = time to solve each problem + 15 min per wrong submission before accepted
+        - Only submissions within contest time window are considered
+        - After an accepted submission for a problem, further wrong submissions don't add penalty
+        """
+        logger.debug(f"Generating contest leaderboard: contest_id={contest_id}, page={page}, page_size={page_size}")
+        
+        # Get contest details
+        contest_repo = ContestRepository(self.problem_repo.db)
+        contest = contest_repo.get_contest_by_id(contest_id)
+        if not contest:
+            raise ValueError("Contest not found")
+        
+        # Get problem IDs and titles for this contest
+        problem_ids = contest.problem_ids
+        if not problem_ids:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "pages": 0,
+                "has_next": False,
+                "has_prev": False
+            }
+        
+        # Build problem_id -> problem mapping for titles
+        problems = contest.problems
+        problem_map = {p.id: p for p in problems}
+        
+        # Get all submissions during contest time
+        submissions = self.problem_repo.list_submissions_for_contest(
+            problem_ids=problem_ids,
+            start_time=contest.start_date,
+            end_time=contest.end_date
+        )
+        
+        # Calculate stats per user per problem
+        # user_stats[username][problem_id] = {
+        #     'accepted': bool,
+        #     'first_accepted_time': datetime or None,
+        #     'wrong_before_accepted': int (count of wrong submissions before first accepted)
+        # }
+        user_stats: dict[str, dict[int, dict]] = defaultdict(lambda: defaultdict(lambda: {
+            'accepted': False,
+            'first_accepted_time': None,
+            'wrong_before_accepted': 0
+        }))
+        
+        for submission in submissions:
+            username = submission.username
+            problem_id = submission.problem_id
+            sub_status = submission.status
+            sub_time = submission.submission_time
+            
+            stats = user_stats[username][problem_id]
+            
+            # If already accepted this problem, skip (no more penalty after accepted)
+            if stats['accepted']:
+                continue
+            
+            if sub_status == SubmissionStatus.ACCEPTED.value:
+                stats['accepted'] = True
+                stats['first_accepted_time'] = sub_time
+            else:
+                # Wrong submission before accepted
+                stats['wrong_before_accepted'] += 1
+        
+        # Calculate leaderboard entries with problem details
+        from app.schemas import ContestProblemSubmissionDetail
+        
+        leaderboard_data = []
+        contest_start = contest.start_date
+        
+        for username, problem_stats in user_stats.items():
+            problems_solved = 0
+            total_penalty = 0
+            problem_details = []
+            
+            for problem_id in problem_ids:
+                stats = problem_stats[problem_id]
+                problem = problem_map.get(problem_id)
+                problem_title = problem.title if problem else f"Problem {problem_id}"
+                
+                if stats['accepted'] and stats['first_accepted_time']:
+                    problems_solved += 1
+                    
+                    # Time to solve in minutes
+                    time_to_solve = int((stats['first_accepted_time'] - contest_start).total_seconds() / 60)
+                    
+                    # Penalty = time to solve + (wrong submissions before accepted * contest penalty)
+                    penalty_minutes_per_wrong = contest.penalty_minutes
+                    penalty = time_to_solve + (stats['wrong_before_accepted'] * penalty_minutes_per_wrong)
+                    total_penalty += penalty
+                    
+                    problem_details.append(ContestProblemSubmissionDetail(
+                        problem_id=problem_id,
+                        problem_title=problem_title,
+                        accepted=True,
+                        accepted_at_minutes=time_to_solve,
+                        incorrect_submissions=stats['wrong_before_accepted'],
+                        penalty_minutes=penalty
+                    ))
+                else:
+                    # Problem not solved - still include with accepted=False
+                    problem_details.append(ContestProblemSubmissionDetail(
+                        problem_id=problem_id,
+                        problem_title=problem_title,
+                        accepted=False,
+                        accepted_at_minutes=None,
+                        incorrect_submissions=stats['wrong_before_accepted'],
+                        penalty_minutes=0
+                    ))
+            
+            if problems_solved > 0:
+                leaderboard_data.append({
+                    'username': username,
+                    'problems_solved': problems_solved,
+                    'penalty_time': total_penalty,
+                    'problem_details': problem_details
+                })
+        
+        # Sort by problems solved (desc), then by penalty time (asc)
+        leaderboard_data.sort(key=lambda x: (-x['problems_solved'], x['penalty_time']))
+        
+        # Assign ranks (handle ties)
+        ranked_entries = []
+        rank = 0
+        prev_problems = -1
+        prev_penalty = -1
+        
+        for i, entry in enumerate(leaderboard_data):
+            if entry['problems_solved'] != prev_problems or entry['penalty_time'] != prev_penalty:
+                rank = i + 1
+                prev_problems = entry['problems_solved']
+                prev_penalty = entry['penalty_time']
+            
+            ranked_entries.append(ContestLeaderboardEntryOut(
+                username=entry['username'],
+                problems_solved=entry['problems_solved'],
+                penalty_time=entry['penalty_time'],
+                rank=rank,
+                problem_details=entry['problem_details']
+            ))
+        
+        # Apply pagination
+        total = len(ranked_entries)
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        paginated = ranked_entries[start_index:end_index]
+        
+        pages = (total + page_size - 1) // page_size if total > 0 else 0
+        has_next = page < pages
+        has_prev = page > 1
+        
+        logger.debug(f"Contest leaderboard generated: {total} entries, {pages} pages")
+        
+        return {
+            "items": paginated,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+            "has_next": has_next,
+            "has_prev": has_prev
+        }
+
+    def get_team_contest_leaderboard(
+        self,
+        contest_id: int,
+        page: int = 1,
+        page_size: int = 20
+    ):
+        """
+        Generate a leaderboard for a team contest with ICPC-style scoring.
+        
+        Teams are ranked by aggregating submissions from all team members.
+        For each problem, the first accepted submission by any team member counts.
+        
+        Scoring rules:
+        - Teams are ranked by number of problems solved (descending)
+        - Ties are broken by total penalty time (ascending)
+        - Penalty time = time to solve each problem + penalty per wrong submission before first accepted
+        - Only submissions within contest time window are considered
+        - After a team member's accepted submission for a problem, further wrong submissions don't add penalty
+        """
+        logger.debug(f"Generating team contest leaderboard: contest_id={contest_id}, page={page}, page_size={page_size}")
+        
+        # Get contest details
+        contest_repo = ContestRepository(self.problem_repo.db)
+        contest = contest_repo.get_contest_by_id(contest_id)
+        if not contest:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Contest not found"
+            )
+        
+        # Check if this is a team contest
+        from app.models.contest import ContestMode
+        if contest.contest_mode != ContestMode.TEAM.value:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This is not a team contest. Use the regular contest leaderboard endpoint."
+            )
+        
+        # Get problem IDs and titles for this contest
+        problem_ids = contest.problem_ids
+        if not problem_ids:
+            return {
+                "items": [],
+                "total": 0,
+                "page": page,
+                "page_size": page_size,
+                "pages": 0,
+                "has_next": False,
+                "has_prev": False
+            }
+        
+        # Build problem_id -> problem mapping for titles
+        problems = contest.problems
+        problem_map = {p.id: p for p in problems}
+        
+        # Get all submissions during contest time
+        submissions = self.problem_repo.list_submissions_for_contest(
+            problem_ids=problem_ids,
+            start_time=contest.start_date,
+            end_time=contest.end_date
+        )
+        
+        # Get all team registrations for this contest
+        from app.models.contest import ContestRegistration
+        from app.models.team import Team, TeamMember
+        
+        team_registrations = self.problem_repo.db.query(ContestRegistration).filter(
+            ContestRegistration.contest_id == contest_id,
+            ContestRegistration.team_id.isnot(None)
+        ).all()
+        
+        # Build team_id -> team mapping and team member lists
+        teams_map = {}
+        team_members_map = {}  # team_id -> set of user_ids
+        
+        for reg in team_registrations:
+            if reg.team:
+                teams_map[reg.team_id] = reg.team
+                # Get active team member IDs
+                member_ids = {m.user_id for m in reg.team.active_members}
+                team_members_map[reg.team_id] = member_ids
+        
+        # Calculate stats per team per problem
+        # team_stats[team_id][problem_id] = {
+        #     'accepted': bool,
+        #     'first_accepted_time': datetime or None,
+        #     'wrong_before_accepted': int,
+        #     'solved_by': username or None
+        # }
+        team_stats: dict[int, dict[int, dict]] = defaultdict(lambda: defaultdict(lambda: {
+            'accepted': False,
+            'first_accepted_time': None,
+            'wrong_before_accepted': 0,
+            'solved_by': None
+        }))
+        
+        # Group submissions by team
+        for submission in submissions:
+            user_id = submission.user_id
+            problem_id = submission.problem_id
+            sub_status = submission.status
+            sub_time = submission.submission_time
+            username = submission.username
+            
+            # Find which team this user belongs to (if any)
+            for team_id, member_ids in team_members_map.items():
+                if user_id in member_ids:
+                    stats = team_stats[team_id][problem_id]
+                    
+                    # If already accepted this problem by any team member, skip
+                    if stats['accepted']:
+                        continue
+                    
+                    if sub_status == SubmissionStatus.ACCEPTED.value:
+                        stats['accepted'] = True
+                        stats['first_accepted_time'] = sub_time
+                        stats['solved_by'] = username
+                    else:
+                        # Wrong submission before accepted
+                        stats['wrong_before_accepted'] += 1
+                    break  # User can only be in one team per contest
+        
+        # Calculate leaderboard entries with problem details
+        leaderboard_data = []
+        contest_start = contest.start_date
+        
+        for team_id, problem_stats in team_stats.items():
+            team = teams_map.get(team_id)
+            if not team:
+                continue
+            
+            problems_solved = 0
+            total_penalty = 0
+            problem_details = []
+            
+            for problem_id in problem_ids:
+                stats = problem_stats[problem_id]
+                problem = problem_map.get(problem_id)
+                problem_title = problem.title if problem else f"Problem {problem_id}"
+                
+                if stats['accepted'] and stats['first_accepted_time']:
+                    problems_solved += 1
+                    
+                    # Time to solve in minutes
+                    time_to_solve = int((stats['first_accepted_time'] - contest_start).total_seconds() / 60)
+                    
+                    # Penalty = time to solve + (wrong submissions before accepted * contest penalty)
+                    penalty_minutes_per_wrong = contest.penalty_minutes
+                    penalty = time_to_solve + (stats['wrong_before_accepted'] * penalty_minutes_per_wrong)
+                    total_penalty += penalty
+                    
+                    problem_details.append(TeamContestProblemDetail(
+                        problem_id=problem_id,
+                        problem_title=problem_title,
+                        accepted=True,
+                        accepted_at_minutes=time_to_solve,
+                        incorrect_submissions=stats['wrong_before_accepted'],
+                        penalty_minutes=penalty,
+                        solved_by=stats['solved_by']
+                    ))
+                else:
+                    # Problem not solved - still include with accepted=False
+                    problem_details.append(TeamContestProblemDetail(
+                        problem_id=problem_id,
+                        problem_title=problem_title,
+                        accepted=False,
+                        accepted_at_minutes=None,
+                        incorrect_submissions=stats['wrong_before_accepted'],
+                        penalty_minutes=0,
+                        solved_by=None
+                    ))
+            
+            if problems_solved > 0:
+                leaderboard_data.append({
+                    'team_id': team_id,
+                    'team_name': team.name,
+                    'member_count': team.member_count,
+                    'member_usernames': team.member_usernames,
+                    'problems_solved': problems_solved,
+                    'penalty_time': total_penalty,
+                    'problem_details': problem_details
+                })
+        
+        # Sort by problems solved (desc), then by penalty time (asc)
+        leaderboard_data.sort(key=lambda x: (-x['problems_solved'], x['penalty_time']))
+        
+        # Assign ranks (handle ties)
+        ranked_entries = []
+        rank = 0
+        prev_problems = -1
+        prev_penalty = -1
+        
+        for i, entry in enumerate(leaderboard_data):
+            if entry['problems_solved'] != prev_problems or entry['penalty_time'] != prev_penalty:
+                rank = i + 1
+                prev_problems = entry['problems_solved']
+                prev_penalty = entry['penalty_time']
+            
+            ranked_entries.append(TeamContestLeaderboardEntryOut(
+                team_id=entry['team_id'],
+                team_name=entry['team_name'],
+                member_count=entry['member_count'],
+                problems_solved=entry['problems_solved'],
+                penalty_time=entry['penalty_time'],
+                rank=rank,
+                problem_details=entry['problem_details'],
+                member_usernames=entry['member_usernames']
+            ))
+        
+        # Apply pagination
+        total = len(ranked_entries)
+        start_index = (page - 1) * page_size
+        end_index = start_index + page_size
+        paginated = ranked_entries[start_index:end_index]
+        
+        pages = (total + page_size - 1) // page_size if total > 0 else 0
+        has_next = page < pages
+        has_prev = page > 1
+        
+        logger.debug(f"Team contest leaderboard generated: {total} entries, {pages} pages")
+        
+        return {
+            "items": paginated,
+            "total": total,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+            "has_next": has_next,
+            "has_prev": has_prev
         }

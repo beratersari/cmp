@@ -42,6 +42,9 @@ class User(Base):
         backref="followers"
     )
 
+    # Badge relationships
+    badges = relationship("UserBadge", back_populates="user", cascade="all, delete-orphan")
+
 class Education(Base):
     __tablename__ = "educations"
 

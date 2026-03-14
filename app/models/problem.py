@@ -105,13 +105,8 @@ class Submission(Base):
     updated_by = Column(String, nullable=True)
     update_time = Column(DateTime(timezone=True), server_default=func.now())
     submission_time = Column(DateTime(timezone=True), server_default=func.now())
-    # Contest-related fields to separate contest submissions from individual problem submissions
-    contest_id = Column(Integer, ForeignKey("contests.id"), nullable=True)
-    is_contest_submission = Column(Boolean, default=False, nullable=False)
-    is_late_submission = Column(Boolean, default=False, nullable=False)  # True if submitted after contest end time
 
     problem = relationship("Problem", back_populates="submissions")
-    contest = relationship("Contest", backref="submissions")
 
 class Editorial(Base):
     __tablename__ = "editorials"

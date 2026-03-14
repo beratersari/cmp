@@ -1,7 +1,7 @@
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Path
 from sqlalchemy.orm import Session
 from app.database import get_db
-from app.schemas import LeaderboardEntryOut, CreatorLeaderboardEntryOut, PaginatedResponse
+from app.schemas import LeaderboardEntryOut, CreatorLeaderboardEntryOut, PaginatedResponse, ContestLeaderboardEntryOut, TeamContestLeaderboardEntryOut
 from app.services.leaderboard_service import LeaderboardService
 from app.api.dependencies import RoleChecker, get_current_user
 from app.models.user import UserRole
@@ -338,4 +338,91 @@ def following_leaderboard_last_year(
         page_size=page_size,
         days=365
     )
+    return result
+
+
+# ============================================================================
+# Contest Leaderboard Endpoints
+# ============================================================================
+
+@router.get(
+    "/contests/{contest_id}",
+    response_model=PaginatedResponse[ContestLeaderboardEntryOut],
+    summary="Contest leaderboard with ICPC-style scoring",
+    description="""
+    Returns a leaderboard for a specific contest with ICPC-style scoring.
+    
+    ### Scoring Rules:
+    - **Primary**: Users ranked by number of problems solved (descending)
+    - **Tiebreaker**: Total penalty time (ascending)
+    - **Penalty Calculation**: For each solved problem:
+      - Base time = minutes from contest start to first accepted submission
+      - Penalty = 15 minutes per wrong submission BEFORE the accepted one
+      - After an accepted submission, further wrong submissions don't add penalty
+    - Only submissions within the contest time window are considered
+    
+    ### Pagination:
+    - Use `page` and `page_size` query parameters to control pagination.
+    - Default: page=1, page_size=20
+    """
+)
+def contest_leaderboard(
+    contest_id: int = Path(..., description="Contest ID", ge=1),
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page")
+):
+    logger.info(f"Getting contest leaderboard: contest_id={contest_id}, page={page}")
+    leaderboard_service = LeaderboardService(db)
+    result = leaderboard_service.get_contest_leaderboard(
+        contest_id=contest_id,
+        page=page,
+        page_size=page_size
+    )
+    logger.debug(f"Contest leaderboard retrieved: {len(result.get('items', []))} entries")
+    return result
+
+
+@router.get(
+    "/contests/{contest_id}/teams",
+    response_model=PaginatedResponse[TeamContestLeaderboardEntryOut],
+    summary="Team contest leaderboard with ICPC-style scoring",
+    description="""
+    Returns a leaderboard for a team contest with ICPC-style scoring.
+    
+    This endpoint aggregates submissions from all team members. For each problem,
+    the first accepted submission by any team member counts for the team.
+    
+    ### Scoring Rules:
+    - **Primary**: Teams ranked by number of problems solved (descending)
+    - **Tiebreaker**: Total penalty time (ascending)
+    - **Penalty Calculation**: For each solved problem:
+      - Base time = minutes from contest start to first accepted submission by any team member
+      - Penalty = contest.penalty_minutes per wrong submission BEFORE the first accepted
+      - After a team member's accepted submission, further wrong submissions don't add penalty
+    - Only submissions within contest time window are considered
+    - Only registered teams appear on the leaderboard
+    
+    ### Error Cases:
+    - Returns error if contest is not a team contest
+    
+    ### Pagination:
+    - Use `page` and `page_size` query parameters to control pagination.
+    - Default: page=1, page_size=20
+    """
+)
+def team_contest_leaderboard(
+    contest_id: int = Path(..., description="Contest ID", ge=1),
+    db: Session = Depends(get_db),
+    page: int = Query(default=1, ge=1, description="Page number (1-indexed)"),
+    page_size: int = Query(default=20, ge=1, le=100, description="Number of items per page")
+):
+    logger.info(f"Getting team contest leaderboard: contest_id={contest_id}, page={page}")
+    leaderboard_service = LeaderboardService(db)
+    result = leaderboard_service.get_team_contest_leaderboard(
+        contest_id=contest_id,
+        page=page,
+        page_size=page_size
+    )
+    logger.debug(f"Team contest leaderboard retrieved: {len(result.get('items', []))} entries")
     return result

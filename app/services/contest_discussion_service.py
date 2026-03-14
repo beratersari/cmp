@@ -35,17 +35,23 @@ class ContestDiscussionService:
                 detail="Discussion content is required"
             )
 
-        # Ensure contest exists and is published
+        # Ensure contest exists
         contest = self.contest_repo.get_contest_by_id(contest_id)
         if not contest:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Contest not found"
             )
-        if not contest.is_published:
+        
+        # For private/archived contests, only contest owner can create discussions
+        # Admins are checked via API RoleChecker, so we trust the caller
+        is_owner = contest.owner_id == author_id
+        
+        # For non-public contests, only owners can create discussions
+        if not contest.is_public and not is_owner:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail="Cannot create discussion for unpublished contest"
+                detail="Cannot create discussion for non-public contest. Only contest owners can do this."
             )
 
         discussion = self.discussion_repo.create_discussion(

@@ -77,9 +77,7 @@ On startup, the application creates:
 - **Contest announcements for each contest**.
 - **Contest discussions with comments for each contest**.
 - **Contest registrations for private contests (some approved, some pending)**.
-- **Contest submissions for each contest (mix of on-time and late submissions)**.
-- **Contest managers for team collaboration**.
-- **Contest tickets with responses (clarification system)**.
+- **Contest submissions: 200+ per contest with mixed statuses** (ACCEPTED, WRONG_ANSWER, TIME_LIMIT_EXCEEDED, MEMORY_LIMIT_EXCEEDED, SYNTAX_ERROR, PENDING) for testing contest leaderboards with penalty calculations.
 
 ## Authentication and Roles
 
@@ -113,39 +111,9 @@ A `Problem` contains:
 - **Testcases** (array of `{input, output}` pairs)
 - **Tags** (list of tag names)
 - **Editorial** (detailed explanation and reference code solution)
-- **Submissions** (each submission tracks `user_id`, `username`, `programming_language`, `code`, `status`, `submission_time`, and contest-related fields)
+- **Submissions** (each submission tracks `user_id`, `username`, `programming_language`, `code`, `status`, and `submission_time`)
 - **Visibility**: Published/Unpublished, Public/Private
 - **Allowed Users** (for private problems)
-
-## Submission Entity
-
-A `Submission` contains:
-- **problem_id** (required)
-- **user_id** (required)
-- **username** (required)
-- **programming_language** (required)
-- **code** (required)
-- **status** (PENDING, ACCEPTED, WRONG_ANSWER, etc.)
-- **submission_time** (timestamp)
-- **contest_id** (optional) - The contest ID if submitted during a contest
-- **is_contest_submission** (boolean) - Whether this was submitted via contest endpoint
-- **is_late_submission** (boolean) - Whether this contest submission was made after contest end time
-
-### Submission Separation
-
-Submissions are separated into two categories:
-
-1. **Individual Problem Submissions**: Made via `POST /problems/{problem_id}/submissions`
-   - These are NOT associated with any contest
-   - When listing submissions for a problem, contest submissions are excluded by default
-
-2. **Contest Submissions**: Made via `POST /contests/{contest_id}/problems/{problem_id}/submissions`
-   - These are linked to a specific contest via `contest_id`
-   - Marked with `is_contest_submission=True`
-   - If submitted after contest end time, marked with `is_late_submission=True`
-   - When listing submissions for a contest, only contest submissions are shown
-
-This separation ensures that contest submissions don't pollute individual problem submission lists, similar to Codeforces and LeetCode.
 
 ## User Education
 
@@ -218,6 +186,11 @@ Contests can have three types:
 - `PUT /contests/{contest_id}` - Update a contest (admin/owner)
 - `DELETE /contests/{contest_id}` - Delete a contest (admin/owner)
 
+**Contest Configuration:**
+- `penalty_minutes` - Configurable penalty per wrong submission (default: 15)
+- `contest_mode` - `individual` or `team`
+- `team_size` - Maximum team size (required for team contests)
+
 #### Contest Problem Management
 - `POST /contests/{contest_id}/problems` - Add problems to a contest
 - `DELETE /contests/{contest_id}/problems` - Remove problems from a contest
@@ -246,86 +219,22 @@ Admins and contest creators can create announcements for contests:
 - `PUT /contests/{contest_id}/announcements/{announcement_id}` - Update an announcement (admin/owner)
 - `DELETE /contests/{contest_id}/announcements/{announcement_id}` - Delete an announcement (admin/owner)
 
+#### Contest Submissions
+Get submissions for a contest, optionally filtered by username:
+- `GET /contests/{contest_id}/submissions?username=john&page=1&page_size=20` - Get contest submissions
+  - `username` (optional): Filter submissions by a specific user
+  - Without `username`: Returns all submissions (admin/owner only, or own submissions for regular users)
+
+**Authorization:**
+- Regular users can only see their own submissions
+- Admins and contest owners can see all submissions
+
 **Announcement Features:**
 - Announcements have a title and content
 - Can be published or unpublished (draft mode)
 - Only admins and contest owners can create/edit/delete announcements
 - Regular users can only see published announcements
 - Announcements are ordered by creation date (newest first)
-
-#### Contest Submissions
-Contest submissions are separated from individual problem submissions:
-
-- `POST /contests/{contest_id}/problems/{problem_id}/submissions` - Submit code for a contest problem
-- `GET /contests/{contest_id}/submissions` - List all contest submissions (admin/owner only)
-- `GET /contests/{contest_id}/my/submissions` - List my contest submissions
-- `GET /contests/{contest_id}/problems/{problem_id}/submissions` - List contest submissions for a specific problem (admin/owner only)
-
-**Submission Features:**
-- Contest submissions are linked to the contest via `contest_id`
-- Marked with `is_contest_submission=True`
-- If submitted after contest end time, marked with `is_late_submission=True`
-- Contest submissions do NOT appear when listing submissions for a problem outside the contest
-- Individual problem submissions do NOT appear when listing contest submissions
-
-#### Contest Managers (Team Collaboration)
-Contest managers allow team collaboration on contests. Managers can be added by owners/admins and have full edit permissions:
-
-- `POST /contests/{contest_id}/managers/{user_id}` - Add a manager to a contest (admin/owner only)
-- `DELETE /contests/{contest_id}/managers/{user_id}` - Remove a manager from a contest (admin/owner only)
-- `GET /contests/{contest_id}/managers` - List all managers for a contest
-
-**Manager Permissions:**
-Managers have the same permissions as owners (except adding/removing other managers):
-- View contest problems (including private contests)
-- Edit contest details (title, description, dates, type)
-- Add/remove problems from the contest
-- Reorder problems
-- View and manage registrations (approve/reject)
-- Create/edit/delete announcements
-- View unpublished announcements
-- View all contest submissions
-
-**Notes:**
-- Only contest owners and admins can add/remove managers
-- Cannot add the contest owner as a manager (they already have full access)
-- Cannot add a user who is already a manager
-
-#### Contest Tickets (Clarification System)
-Contest tickets allow contestants to ask questions about problems during a contest, similar to Codeforces and other competitive programming platforms:
-
-- `POST /contests/{contest_id}/tickets` - Create a ticket/clarification
-- `GET /contests/{contest_id}/tickets` - List tickets for a contest (paginated)
-- `GET /contests/tickets/my` - List my tickets across all contests
-- `GET /contests/tickets/{ticket_id}` - Get a specific ticket with responses
-- `PUT /contests/tickets/{ticket_id}` - Update a ticket
-- `PUT /contests/tickets/{ticket_id}/status` - Update ticket status
-- `DELETE /contests/tickets/{ticket_id}` - Delete a ticket
-- `POST /contests/tickets/{ticket_id}/responses` - Create a response (managers only)
-- `PUT /contests/ticket-responses/{response_id}` - Update a response
-- `DELETE /contests/ticket-responses/{response_id}` - Delete a response
-
-**Ticket Fields:**
-- **title**: Ticket title (required, 1-200 characters)
-- **content**: The question/clarification (required)
-- **problem_id**: Problem ID this ticket is about (optional)
-- **is_public**: Whether this ticket is visible to all contestants (default: false)
-
-**Ticket Status:**
-- `open`: Ticket is awaiting response
-- `answered`: Ticket has been answered by staff
-- `closed`: Ticket is closed
-
-**Visibility Rules:**
-- Regular users see their own tickets and public tickets
-- Managers (admin/owner/managers) see all tickets
-- When a manager responds to a ticket, its status is automatically changed to "answered"
-
-**Authorization:**
-- Any registered user can create tickets
-- Ticket authors can update their own tickets and close them
-- Only managers can respond to tickets and change ticket status
-- Ticket authors and managers can delete tickets
 
 ### Contest Discussions
 Discussions attached to specific contests (LeetCode-style):
@@ -375,6 +284,74 @@ Leaderboards consisting only of users you follow (plus yourself):
 - `GET /leaderboards/following/last-7-days?page=1&page_size=20` - By accepted submissions in last 7 days
 - `GET /leaderboards/following/last-30-days?page=1&page_size=20` - By accepted submissions in last 30 days
 - `GET /leaderboards/following/last-year?page=1&page_size=20` - By accepted submissions in last year
+
+### Contest Leaderboards (ICPC-style Scoring)
+Contest-specific leaderboards with penalty-based scoring:
+- `GET /leaderboards/contests/{contest_id}?page=1&page_size=20` - Contest leaderboard
+
+**Scoring Rules:**
+- **Primary ranking**: Number of problems solved (descending)
+- **Tiebreaker**: Total penalty time (ascending)
+- **Penalty calculation**: For each solved problem:
+  - Base time = minutes from contest start to first accepted submission
+  - Penalty = 15 minutes per wrong submission BEFORE the accepted one
+  - After an accepted submission, further wrong submissions don't add penalty
+- Only submissions within the contest time window are considered
+- Only users with at least one solved problem appear on leaderboard
+
+**Response Format:**
+```json
+{
+  "items": [
+    {
+      "username": "alice",
+      "problems_solved": 3,
+      "penalty_time": 145,
+      "rank": 1,
+      "problem_details": [
+        {
+          "problem_id": 1,
+          "problem_title": "Sum of Two Numbers",
+          "accepted": true,
+          "accepted_at_minutes": 15,
+          "incorrect_submissions": 2,
+          "penalty_minutes": 45
+        },
+        {
+          "problem_id": 2,
+          "problem_title": "Binary Search",
+          "accepted": true,
+          "accepted_at_minutes": 45,
+          "incorrect_submissions": 1,
+          "penalty_minutes": 60
+        },
+        {
+          "problem_id": 3,
+          "problem_title": "Dynamic Programming",
+          "accepted": false,
+          "accepted_at_minutes": null,
+          "incorrect_submissions": 3,
+          "penalty_minutes": 0
+        }
+      ]
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "page_size": 20,
+  "pages": 1,
+  "has_next": false,
+  "has_prev": false
+}
+```
+
+**Problem Detail Fields:**
+- `problem_id` - ID of the contest problem
+- `problem_title` - Title of the problem
+- `accepted` - Whether the user solved this problem
+- `accepted_at_minutes` - Minutes after contest start when solution was accepted (null if not solved)
+- `incorrect_submissions` - Number of wrong submissions before the first accepted submission
+- `penalty_minutes` - Total penalty for this problem (time + 15 min per incorrect submission, 0 if not solved)
 
 ### User Submission History
 - `GET /users/me/submission-history?start_date=2024-01-01&end_date=2024-01-31`
@@ -699,6 +676,26 @@ curl -X POST "http://localhost:8000/contests" \
     "start_date": "2024-02-01T10:00:00Z",
     "end_date": "2024-02-01T12:00:00Z",
     "contest_type": "public",
+    "contest_mode": "individual",
+    "penalty_minutes": 15,
+    "problem_ids": [1, 2, 3, 4, 5]
+  }'
+```
+
+### Create a Team Contest
+```bash
+curl -X POST "http://localhost:8000/contests" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{
+    "title": "Team Contest 1",
+    "description": "A team programming contest",
+    "start_date": "2024-02-01T10:00:00Z",
+    "end_date": "2024-02-01T14:00:00Z",
+    "contest_type": "public",
+    "contest_mode": "team",
+    "team_size": 3,
+    "penalty_minutes": 20,
     "problem_ids": [1, 2, 3, 4, 5]
   }'
 ```
@@ -850,59 +847,520 @@ curl -X DELETE "http://localhost:8000/contests/1/announcements/1" \
   -H "Authorization: Bearer <token>"
 ```
 
-### Create a Contest Ticket (Clarification)
+### Get Contest Submissions (All)
 ```bash
-curl -X POST "http://localhost:8000/contests/1/tickets" \
+curl -X GET "http://localhost:8000/contests/1/submissions?page=1&page_size=20" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get Contest Submissions (Filtered by User)
+```bash
+curl -X GET "http://localhost:8000/contests/1/submissions?username=john&page=1&page_size=20" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Get Contest Leaderboard
+```bash
+curl -X GET "http://localhost:8000/leaderboards/contests/1?page=1&page_size=10"
+```
+
+### Get Contest Leaderboard (Paginated)
+```bash
+curl -X GET "http://localhost:8000/leaderboards/contests/1?page=2&page_size=20"
+```
+
+### Get Team Contest Leaderboard
+```bash
+curl -X GET "http://localhost:8000/leaderboards/contests/1/teams?page=1&page_size=20"
+```
+
+**Response Format (Team Contest):**
+```json
+{
+  "items": [
+    {
+      "team_id": 1,
+      "team_name": "Code Warriors",
+      "member_count": 3,
+      "problems_solved": 4,
+      "penalty_time": 245,
+      "rank": 1,
+      "problem_details": [
+        {
+          "problem_id": 1,
+          "problem_title": "Sum of Two Numbers",
+          "accepted": true,
+          "accepted_at_minutes": 12,
+          "incorrect_submissions": 1,
+          "penalty_minutes": 27,
+          "solved_by": "alice"
+        }
+      ],
+      "member_usernames": ["alice", "bob", "charlie"]
+    }
+  ],
+  "total": 1,
+  "page": 1,
+  "page_size": 20,
+  "pages": 1,
+  "has_next": false,
+  "has_prev": false
+}
+```
+
+**Team Leaderboard Features:**
+- Aggregates submissions from all team members
+- First accepted submission by any team member counts for the team
+- Shows which team member solved each problem (`solved_by` field)
+- Only registered teams appear on the leaderboard
+- Returns error if called on individual contests
+
+### Get User Submissions Grouped by Problem
+```bash
+curl -X GET "http://localhost:8000/contests/1/submissions/grouped?username=john" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response Format:**
+```json
+{
+  "contest_id": 1,
+  "username": "john",
+  "problems": [
+    {
+      "problem_id": 1,
+      "problem_title": "Sum of Two Numbers",
+      "submissions": [
+        {
+          "id": 101,
+          "problem_id": 1,
+          "user_id": 5,
+          "username": "john",
+          "programming_language": "python",
+          "code": "print(sum(map(int, input().split())))",
+          "status": "ACCEPTED",
+          "submission_time": "2024-02-01T10:15:00"
+        }
+      ],
+      "accepted": true,
+      "first_accepted_at": "2024-02-01T10:15:00",
+      "total_submissions": 1,
+      "incorrect_submissions": 0
+    }
+  ],
+  "total_problems_solved": 1,
+  "total_submissions": 1
+}
+```
+
+## Team Management
+
+Teams allow users to participate in team-based contests together.
+
+### Team Endpoints
+
+#### Create a Team
+```bash
+curl -X POST "http://localhost:8000/teams" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{
-    "title": "Clarification on input constraints",
-    "content": "The problem states that n can be up to 10^5, but the sample input has n=10^6. Which one is correct?",
-    "problem_id": 1,
-    "is_public": false
+    "name": "Code Warriors",
+    "description": "A team of competitive programmers"
   }'
 ```
 
-### List Contest Tickets
+#### List All Teams
 ```bash
-curl -X GET "http://localhost:8000/contests/1/tickets?page=1&page_size=10" \
+curl -X GET "http://localhost:8000/teams?page=1&page_size=20&search=warriors" \
   -H "Authorization: Bearer <token>"
 ```
 
-### Get a Specific Ticket
+#### List My Teams
 ```bash
-curl -X GET "http://localhost:8000/contests/tickets/1" \
+curl -X GET "http://localhost:8000/teams?my_teams=true&page=1&page_size=20" \
   -H "Authorization: Bearer <token>"
 ```
 
-### Respond to a Ticket (managers only)
+#### Get Team Details
 ```bash
-curl -X POST "http://localhost:8000/contests/tickets/1/responses" \
+curl -X GET "http://localhost:8000/teams/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+#### Add Member to Team
+```bash
+curl -X POST "http://localhost:8000/teams/1/members?username=alice" \
+  -H "Authorization: Bearer <token>"
+```
+
+#### Remove Member from Team
+```bash
+curl -X DELETE "http://localhost:8000/teams/1/members/5" \
+  -H "Authorization: Bearer <token>"
+```
+
+#### Leave Team
+```bash
+curl -X POST "http://localhost:8000/teams/1/leave" \
+  -H "Authorization: Bearer <token>"
+```
+
+#### Transfer Team Leadership
+```bash
+curl -X POST "http://localhost:8000/teams/1/transfer-leadership?new_leader_id=5" \
+  -H "Authorization: Bearer <token>"
+```
+
+#### Delete Team
+```bash
+curl -X DELETE "http://localhost:8000/teams/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Team-Based Contest Registration
+
+#### Register Team for a Contest
+```bash
+curl -X POST "http://localhost:8000/contests/1/register" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{
-    "content": "Thank you for your question. The constraint should be 1 <= n <= 10^6. We have updated the problem statement accordingly."
+    "team_id": 1
   }'
 ```
 
-### Update Ticket Status
+**Validations:**
+- Only team leaders can register their team for contests
+- Team size must not exceed the contest's `team_size` limit
+- Cannot register a team for individual-only contests
+- Cannot register as individual for team-only contests
+- Team members cannot be registered for the same contest in another team
+
+### Team Validation Rules
+
+1. **Team Creation:**
+   - Team name must be unique and at least 3 characters
+   - Creator automatically becomes team leader
+
+2. **Team Membership:**
+   - Only team leader can add/remove members
+   - Members can leave the team (but leader cannot leave)
+   - Leader must transfer ownership before leaving
+
+3. **Contest Registration:**
+   - Individual contests: Only individual registrations allowed
+   - Team contests: Only team registrations allowed
+   - Team size is validated against contest limit
+   - A team cannot be registered for the same contest twice
+
+4. **Team Deletion:**
+   - Only team leader can delete the team
+   - Cannot delete a team with active contest registrations
+
+## Testing Team Features
+
+The mock data automatically creates test data for teams:
+
+### Pre-created Teams (on startup):
+- **Code Warriors** (ID: 1) - 3 members
+- **Algorithm Masters** (ID: 2) - 3 members  
+- **Bug Hunters** (ID: 3) - 3 members
+
+### Pre-created Team Contests:
+- **Team Challenge 2024** (ID: varies) - Past contest with submissions
+- **Collaborative Coding Cup** (ID: varies) - Future contest
+
+### Quick Test Examples:
+
+#### 1. List Teams
 ```bash
-curl -X PUT "http://localhost:8000/contests/tickets/1/status" \
+curl -X GET "http://localhost:8000/teams" \
+  -H "Authorization: Bearer <token>"
+```
+
+#### 2. Get Team Details
+```bash
+curl -X GET "http://localhost:8000/teams/1" \
+  -H "Authorization: Bearer <token>"
+```
+
+#### 3. Register a Team for a Contest
+```bash
+# Login as team leader first (e.g., user1, user4, or user7 are team leaders)
+curl -X POST "http://localhost:8000/auth/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username": "user1", "password": "userpass"}'
+
+# Then register the team (replace CONTEST_ID with actual team contest ID)
+curl -X POST "http://localhost:8000/contests/CONTEST_ID/register" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <token>" \
+  -d '{"team_id": 1}'
+```
+
+#### 4. View Team Leaderboard
+```bash
+# Replace CONTEST_ID with the team contest ID
+curl -X GET "http://localhost:8000/leaderboards/contests/CONTEST_ID/teams" \
+  -H "Authorization: Bearer <token>"
+```
+
+#### 5. Test Error Handling (Individual Contest)
+```bash
+# This should return an error message instead of crashing
+curl -X GET "http://localhost:8000/leaderboards/contests/1/teams" \
+  -H "Authorization: Bearer <token>"
+# Expected: {"detail": "This is not a team contest. Use the regular contest leaderboard endpoint."}
+```
+
+### Testing Team Member Submissions:
+Each team member can submit solutions individually. The team leaderboard aggregates:
+- First accepted submission by any team member counts for the team
+- Wrong submissions before the first accepted count toward penalty
+- The `solved_by` field shows which member solved each problem
+
+```bash
+# Submit as a team member
+curl -X POST "http://localhost:8000/problems/PROBLEM_ID/submissions" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -d '{
-    "status": "closed"
+    "programming_language": "python",
+    "code": "print(sum(map(int, input().split())))"
   }'
 ```
 
-### Add a Manager to a Contest
+## Achievement Badge System
+
+The platform includes a comprehensive achievement badge system to increase user retention and engagement. Users earn badges by completing various activities on the platform.
+
+### Badge Criteria Types
+
+- `problems_solved`: Total problems solved
+- `contests_participated`: Number of contests joined
+- `streak_days`: Consecutive days with accepted submissions
+- `submissions_made`: Total submissions made
+- `perfect_solves`: Problems solved on first attempt
+- `contests_won`: Contests won (rank 1)
+- `problems_created`: For creators (problems authored)
+- `forum_posts`: Forum posts and comments
+- `account_age`: Days since registration
+
+### Admin Badge Management
+
+#### Create a Badge (Admin Only)
 ```bash
-curl -X POST "http://localhost:8000/contests/1/managers/2" \
+curl -X POST "http://localhost:8000/badges" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "Authorization: Bearer <admin_token>" \
+  -d "name=Master Solver" \
+  -d "description=Solve 500 problems to earn this prestigious badge" \
+  -d "criteria_type=problems_solved" \
+  -d "criteria_value=500" \
+  -d "icon=🏆"
+```
+
+#### List All Badges
+```bash
+curl -X GET "http://localhost:8000/badges?page=1&page_size=20&active_only=true" \
   -H "Authorization: Bearer <token>"
 ```
 
-### List Contest Managers
+#### Update a Badge (Admin Only)
 ```bash
-curl -X GET "http://localhost:8000/contests/1/managers" \
+curl -X PUT "http://localhost:8000/badges/1" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -H "Authorization: Bearer <admin_token>" \
+  -d "criteria_value=75" \
+  -d "is_active=true"
+```
+
+#### Delete a Badge (Admin Only)
+```bash
+curl -X DELETE "http://localhost:8000/badges/1" \
+  -H "Authorization: Bearer <admin_token>"
+```
+
+### User Badge Endpoints
+
+#### Get My Badges with Progress
+```bash
+curl -X GET "http://localhost:8000/badges/my/badges?earned_only=false&page=1" \
   -H "Authorization: Bearer <token>"
 ```
+
+**Response Example:**
+```json
+{
+  "items": [
+    {
+      "id": 1,
+      "badge_id": 1,
+      "badge_name": "Novice Solver",
+      "badge_description": "Solve your first problem!",
+      "badge_icon": "🎯",
+      "criteria_type": "problems_solved",
+      "criteria_value": 1,
+      "progress": 1,
+      "progress_percentage": 100,
+      "is_earned": true,
+      "earned_at": "2024-03-14T10:30:00"
+    },
+    {
+      "id": 2,
+      "badge_id": 2,
+      "badge_name": "Problem Solver",
+      "badge_description": "Solve 10 problems",
+      "badge_icon": "🧩",
+      "criteria_type": "problems_solved",
+      "criteria_value": 10,
+      "progress": 7,
+      "progress_percentage": 70,
+      "is_earned": false,
+      "earned_at": null
+    }
+  ],
+  "total": 16,
+  "page": 1,
+  "page_size": 20,
+  "pages": 1,
+  "has_next": false,
+  "has_prev": false
+}
+```
+
+#### Get My Badge Statistics
+```bash
+curl -X GET "http://localhost:8000/badges/my/stats" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response Example:**
+```json
+{
+  "user_id": 5,
+  "username": "john_doe",
+  "stats": {
+    "total_badges": 16,
+    "earned_badges": 5,
+    "in_progress": 8,
+    "completion_percentage": 31.25
+  }
+}
+```
+
+#### Check and Update My Badges (Manual Trigger)
+```bash
+curl -X POST "http://localhost:8000/badges/my/check" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Response Example:**
+```json
+{
+  "message": "Checked 2 newly earned badges",
+  "newly_earned": [
+    {
+      "badge_id": 3,
+      "badge_name": "Active Submitter",
+      "earned_at": "2024-03-14T10:45:00"
+    }
+  ]
+}
+```
+
+#### Get Public Badges for a User
+```bash
+curl -X GET "http://localhost:8000/badges/users/5/badges?page=1" \
+  -H "Authorization: Bearer <token>"
+```
+
+### Pre-created Badges (Mock Data)
+
+The following badges are automatically created when the server starts:
+
+| Badge Name | Description | Criteria | Icon |
+|------------|-------------|----------|------|
+| Novice Solver | Solve your first problem | 1 problem | 🎯 |
+| Problem Solver | Solve 10 problems | 10 problems | 🧩 |
+| Algorithm Expert | Solve 50 problems | 50 problems | 🏆 |
+| Code Legend | Solve 100 problems | 100 problems | 👑 |
+| Contest Participant | Participate in first contest | 1 contest | 🏁 |
+| Contest Veteran | Participate in 5 contests | 5 contests | 🏅 |
+| 3-Day Streak | Solve for 3 consecutive days | 3 days | 🔥 |
+| 7-Day Streak | Solve for 7 consecutive days | 7 days | ⚡ |
+| Perfect Solve | Solve on first attempt | 1 perfect | 💎 |
+| Perfect Master | 10 perfect solves | 10 perfect | ⭐ |
+| Active Submitter | Make 50 submissions | 50 submissions | 📝 |
+| Power User | Make 200 submissions | 200 submissions | 🚀 |
+| Community Member | 5 forum posts/comments | 5 posts | 💬 |
+| Forum Influencer | 20 forum posts/comments | 20 posts | 📢 |
+| Problem Creator | Create 5 problems | 5 problems | ✏️ |
+| Veteran Member | Member for 30 days | 30 days | 📅 |
+
+### Automatic Progress Tracking
+
+Badge progress is automatically calculated based on user activity:
+- Progress updates when users solve problems
+- Streak badges check consecutive days with accepted submissions
+- Contest participation tracked when registering for contests
+- Forum activity counted from posts and comments
+- Badge earned notification when criteria is met
+
+## Testing Team Contest Leaderboard
+
+Contest ID 6 is pre-configured with team submissions for testing the team leaderboard:
+
+### Pre-configured Data:
+- **Contest 6**: Team contest with 20 problems
+- **3 Teams**: Code Warriors, Algorithm Masters, Bug Hunters
+- **150+ Submissions**: Distributed across team members with various statuses
+
+### Test the Team Leaderboard:
+```bash
+# Get team leaderboard for contest 6
+curl -X GET "http://localhost:8000/leaderboards/contests/6/teams?page=1&page_size=20" \
+  -H "Authorization: Bearer <token>"
+```
+
+**Expected Response:**
+```json
+{
+  "items": [
+    {
+      "team_id": 1,
+      "team_name": "Code Warriors",
+      "member_count": 3,
+      "problems_solved": 8,
+      "penalty_time": 420,
+      "rank": 1,
+      "problem_details": [
+        {
+          "problem_id": 101,
+          "problem_title": "Team Contest Problem 1",
+          "accepted": true,
+          "accepted_at_minutes": 15,
+          "incorrect_submissions": 2,
+          "penalty_minutes": 45,
+          "solved_by": "user1"
+        }
+      ],
+      "member_usernames": ["user1", "user2", "user3"]
+    }
+  ],
+  "total": 3,
+  "page": 1,
+  "page_size": 20,
+  "pages": 1,
+  "has_next": false,
+  "has_prev": false
+}
+```
+
+### Team Leaderboard Features Tested:
+- Teams ranked by problems solved (descending)
+- Tie-breaker by total penalty time (ascending)
+- Per-problem details showing which team member solved it
+- Incorrect submission counts before first accepted
+- Configurable penalty minutes per contest

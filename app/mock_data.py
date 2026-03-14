@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta
+from collections import defaultdict
 from sqlalchemy.orm import Session
 from app.services.user_service import UserService
 from app.services.problem_service import ProblemService
@@ -52,7 +53,7 @@ def seed_mock_data(db: Session):
         creators = [admin]
 
     # Ensure tags exist
-    tag_names = ["dp", "math", "graphs", "greedy", "strings"]
+    tag_names = ["dp", "math", "graphs", "greedy", "strings", "team"]
     for tag in tag_names:
         try:
             problem_service.create_tag(tag, admin)
@@ -174,14 +175,275 @@ def seed_mock_data(db: Session):
     # Create contest announcements
     seed_contest_announcements(contest_service, contest_service.contest_repo, admin)
 
-    # Create contest submissions
-    seed_contest_submissions(contest_service, contest_service.contest_repo, problem_repo, users, admin)
+    # Create contest submissions (200+ per contest with different statuses)
+    seed_contest_submissions(contest_service, problem_service, problem_repo, users, admin)
 
-    # Create contest managers (team collaboration)
-    seed_contest_managers(contest_service, contest_service.contest_repo, users, admin)
+    # Create teams and team contests
+    seed_teams_and_team_contests(db, user_service, contest_service, problem_service, users, admin)
 
-    # Create contest tickets (clarification system)
-    seed_contest_tickets(contest_service, contest_service.contest_repo, problem_repo, users, admin)
+    # Create badges and achievements
+    seed_badges(db, users, admin)
+
+
+def seed_teams_and_team_contests(db, user_service, contest_service, problem_service, users, admin):
+    """
+    Seed teams and team contests for testing team functionality.
+    Creates 3 teams with 3-4 members each and 2 team contests.
+    """
+    from app.services.team_service import TeamService
+    from app.repositories.team_repository import TeamRepository
+    from app.schemas import ContestCreate, Testcase
+    from app.models.contest import ContestType, ContestMode
+    from datetime import datetime, timedelta, timezone
+    import random
+
+    team_service = TeamService(db)
+    team_repo = TeamRepository(db)
+
+    # Check if we already have teams
+    existing_teams, _ = team_repo.list_teams(limit=10)
+    if len(existing_teams) >= 3:
+        print("Teams already exist, skipping team seeding")
+        return
+
+    # Get users for teams (use regular users and creators)
+    regular_users = [u for u in users if u.role == UserRole.USER][:12]
+    creators = [u for u in users if u.role == UserRole.CREATOR][:3]
+    team_users = regular_users + creators
+
+    if len(team_users) < 9:
+        print("Not enough users to create teams")
+        return
+
+    # Create 3 teams
+    teams_data = [
+        {"name": "Code Warriors", "description": "Elite competitive programming team"},
+        {"name": "Algorithm Masters", "description": "Mastering algorithms one problem at a time"},
+        {"name": "Bug Hunters", "description": "Hunting bugs and solving problems"},
+    ]
+
+    created_teams = []
+    for i, team_data in enumerate(teams_data):
+        try:
+            # Create team with a leader
+            leader = team_users[i * 3]
+            team = team_service.create_team(
+                name=team_data["name"],
+                description=team_data["description"],
+                leader=leader
+            )
+            created_teams.append(team)
+            print(f"Created team: {team.name} (ID: {team.id})")
+
+            # Add 2-3 members to the team
+            for j in range(2):
+                member_idx = i * 3 + j + 1
+                if member_idx < len(team_users):
+                    member = team_users[member_idx]
+                    try:
+                        team_service.add_member(team.id, member.username, leader)
+                        print(f"  Added member: {member.username}")
+                    except Exception as e:
+                        print(f"  Failed to add member {member.username}: {e}")
+        except Exception as e:
+            print(f"Failed to create team {team_data['name']}: {e}")
+
+    if not created_teams:
+        print("No teams created, skipping team contest seeding")
+        return
+
+    # Create 2 team contests
+    now = datetime.now(timezone.utc)
+
+    # Create problems for team contests (20 problems per contest)
+    team_contest_problems = []
+    owners = [u for u in users if u.role == UserRole.CREATOR][:3] or [admin]
+
+    for i in range(40):  # 40 problems for 2 contests
+        owner = owners[i % len(owners)]
+        problem_create = ProblemCreate(
+            title=f"Team Contest Problem {i + 1}",
+            description=f"Description for team contest problem {i + 1}. Work together to solve this!",
+            constraints="1 <= n <= 10^5",
+            difficulty=(i % 10) + 1,
+            testcases=[Testcase(input="1", output="1"), Testcase(input="2", output="2")],
+            tags=["team"],
+            is_published=True,
+            is_public=True
+        )
+        try:
+            problem = problem_service.create_problem(problem_create, owner_id=owner.id, created_by=owner.username)
+            team_contest_problems.append(problem)
+        except Exception:
+            pass
+
+    team_contest_data = [
+        {
+            "title": "Team Challenge 2024",
+            "description": "A team-based competitive programming contest. Form teams of up to 3 members and collaborate to solve problems!",
+            "start_offset_days": -2,  # Past contest (so submissions can be added)
+            "duration_hours": 3,
+            "contest_type": ContestType.PUBLIC,
+            "team_size": 3,
+        },
+        {
+            "title": "Collaborative Coding Cup",
+            "description": "Work together with your team to solve challenging algorithmic problems. Teamwork makes the dream work!",
+            "start_offset_days": 7,  # Future contest
+            "duration_hours": 4,
+            "contest_type": ContestType.PUBLIC,
+            "team_size": 3,
+        },
+    ]
+
+    created_team_contests = []
+    for i, data in enumerate(team_contest_data):
+        start_date = now + timedelta(days=data["start_offset_days"])
+        end_date = start_date + timedelta(hours=data["duration_hours"])
+
+        # Select 20 problems for this contest
+        start_idx = i * 20
+        end_idx = start_idx + 20
+        contest_problem_ids = [p.id for p in team_contest_problems[start_idx:end_idx]]
+
+        contest_create = ContestCreate(
+            title=data["title"],
+            description=data["description"],
+            start_date=start_date,
+            end_date=end_date,
+            contest_type=data["contest_type"],
+            contest_mode=ContestMode.TEAM,
+            team_size=data["team_size"],
+            penalty_minutes=20,
+            problem_ids=contest_problem_ids
+        )
+
+        try:
+            contest = contest_service.create_contest(
+                contest_create,
+                owner_id=admin.id,
+                created_by=admin.username
+            )
+            created_team_contests.append(contest)
+            print(f"Created team contest: {contest.title} (ID: {contest.id})")
+        except Exception as e:
+            print(f"Failed to create team contest {data['title']}: {e}")
+
+    # Register teams for the first (past) team contest
+    if created_team_contests and created_teams:
+        past_contest = created_team_contests[0]  # First contest is in the past
+
+        for team in created_teams:
+            try:
+                # Get team leader
+                leader = team.leader
+                if leader:
+                    contest_service.register_for_contest(
+                        contest_id=past_contest.id,
+                        current_user=leader,
+                        team_id=team.id
+                    )
+                    print(f"Registered team '{team.name}' for contest '{past_contest.title}'")
+            except Exception as e:
+                print(f"Failed to register team {team.name}: {e}")
+
+        # Create team contest submissions
+        seed_team_contest_submissions(contest_service, problem_service, past_contest, created_teams, admin)
+
+
+def seed_team_contest_submissions(contest_service, problem_service, contest, teams, admin):
+    """
+    Seed submissions for a team contest.
+    Each team member makes submissions, and some problems get solved.
+    """
+    from app.models.problem import SubmissionStatus
+    from app.repositories.problem_repository import ProblemRepository
+    import random
+
+    problem_repo = ProblemRepository(contest_service.contest_repo.db)
+
+    # Get contest problems
+    contest_detail = contest_service.get_contest(contest.id, current_user=admin)
+    problem_ids = contest_detail.problem_ids
+
+    if not problem_ids:
+        return
+
+    contest_start = contest.start_date
+    contest_end = contest.end_date
+    contest_duration = (contest_end - contest_start).total_seconds()
+
+    # Status distribution
+    status_weights = {
+        SubmissionStatus.ACCEPTED: 20,
+        SubmissionStatus.WRONG_ANSWER: 40,
+        SubmissionStatus.TIME_LIMIT_EXCEEDED: 15,
+        SubmissionStatus.MEMORY_LIMIT_EXCEEDED: 5,
+        SubmissionStatus.SYNTAX_ERROR: 15,
+        SubmissionStatus.PENDING: 5
+    }
+
+    status_pool = []
+    for status, weight in status_weights.items():
+        status_pool.extend([status.value] * weight)
+
+    total_submissions = 0
+    target_submissions = 150  # 150 submissions per team contest
+
+    # For each team, have members make submissions
+    for team in teams:
+        team_members = team.active_members
+        if not team_members:
+            continue
+
+        # Track which problems the team has solved
+        team_solved_problems = set()
+
+        for member in team_members:
+            # Each member makes 10-20 submissions
+            num_submissions = random.randint(10, 20)
+
+            for _ in range(num_submissions):
+                if total_submissions >= target_submissions:
+                    break
+
+                # Pick a random problem
+                problem_id = random.choice(problem_ids)
+
+                # Determine submission time (within contest duration)
+                time_offset = random.uniform(0, contest_duration * 0.9)  # Submit in first 90% of contest
+                submission_time = contest_start + timedelta(seconds=time_offset)
+
+                # If team already solved this problem, higher chance of accepted
+                if problem_id in team_solved_problems:
+                    status = SubmissionStatus.ACCEPTED.value if random.random() > 0.3 else random.choice(status_pool)
+                else:
+                    status = random.choice(status_pool)
+
+                # Create submission
+                try:
+                    submission = problem_repo.create_submission(
+                        problem_id=problem_id,
+                        submission_create=SubmissionCreate(
+                            programming_language=random.choice(["python", "cpp", "java"]),
+                            code=f"# Solution by {member.user.username}\nprint('hello world')"
+                        ),
+                        user_id=member.user_id,
+                        username=member.user.username
+                    )
+
+                    # Update submission time and status
+                    submission.submission_time = submission_time
+                    problem_repo.update_submission_status(submission, status, updated_by="system")
+
+                    if status == SubmissionStatus.ACCEPTED.value:
+                        team_solved_problems.add(problem_id)
+
+                    total_submissions += 1
+                except Exception:
+                    pass
+
+    print(f"Created {total_submissions} team contest submissions")
 
 
 def seed_forum_data(forum_service: ForumService, users, admin):
@@ -905,337 +1167,453 @@ def seed_contest_announcements(contest_service, contest_repo, admin):
     print(f"Created {total_announcements} contest announcements")
 
 
-def seed_contest_submissions(contest_service, contest_repo, problem_repo, users, admin):
+def seed_contest_submissions(contest_service, problem_service, problem_repo, users, admin):
     """
-    Seed contest submissions for contests.
-    Creates submissions for past contests with a mix of on-time and late submissions.
-    Always creates submissions if past contests exist without submissions.
+    Seed contest submissions with 200+ submissions per contest.
+    Creates a mix of different statuses: ACCEPTED, WRONG_ANSWER, TIME_LIMIT_EXCEEDED,
+    MEMORY_LIMIT_EXCEEDED, SYNTAX_ERROR, PENDING.
+    
+    This enables testing of the contest leaderboard with penalty calculations.
     """
-    from datetime import datetime, timezone
-    import random
-    
-    # Get all contests using the repository to get full details
-    contests = contest_repo.list_contests(limit=100)[0]  # Get raw contest objects
-    
-    if not contests:
-        return
-    
-    # Get the db session from contest_repo
-    db = contest_repo.db
-    
-    # Check if any past contest has submissions
-    past_contests = []
-    now = datetime.now(timezone.utc)
-    for contest in contests:
-        contest_start = contest.start_date
-        if contest_start.tzinfo is None:
-            contest_start = contest_start.replace(tzinfo=timezone.utc)
-        if contest_start < now:
-            past_contests.append(contest)
-    
-    if not past_contests:
-        print("No past contests found, skipping contest submissions seed")
-        return
-    
-    # Get all users except admin
-    regular_users = [u for u in users if u.role == UserRole.USER]
-    creators = [u for u in users if u.role == UserRole.CREATOR]
-    all_users = regular_users + creators
-    
-    if not all_users:
-        return
-    
-    total_submissions = 0
-    
-    for contest in contests:
-        # Only create submissions for past contests
-        now = datetime.now(timezone.utc)
-        contest_start = contest.start_date
-        contest_end = contest.end_date
-        
-        # Make sure we have timezone-aware datetimes
-        if contest_start.tzinfo is None:
-            contest_start = contest_start.replace(tzinfo=timezone.utc)
-        if contest_end.tzinfo is None:
-            contest_end = contest_end.replace(tzinfo=timezone.utc)
-            
-        if contest_start > now:
-            continue  # Skip future contests
-        
-        # Get problem IDs for this contest - try multiple ways
-        problem_ids = []
-        
-        # Method 1: Via contest_problems relationship (if loaded)
-        try:
-            problem_ids = [cp.problem_id for cp in contest.contest_problems]
-        except:
-            pass
-        
-        # Method 2: Via ContestProblem table query
-        if not problem_ids:
-            from app.models.contest import ContestProblem
-            try:
-                cps = db.query(ContestProblem).filter(ContestProblem.contest_id == contest.id).all()
-                problem_ids = [cp.problem_id for cp in cps]
-            except:
-                pass
-        
-        # Method 3: Via problem_ids property if exists
-        if not problem_ids:
-            try:
-                problem_ids = list(contest.problem_ids) if hasattr(contest, 'problem_ids') else []
-            except:
-                pass
-        
-        if not problem_ids:
-            print(f"Contest {contest.id} has no problems, skipping")
-            continue
-        
-        # Fetch problems from repository
-        contest_problems = []
-        for pid in problem_ids:
-            try:
-                problem = problem_repo.get_problem_by_id(pid)
-                if problem:
-                    contest_problems.append(problem)
-            except:
-                pass
-        
-        if not contest_problems:
-            print(f"Contest {contest.id} has no valid problems, skipping")
-            continue
-        
-        print(f"Contest {contest.id} has {len(contest_problems)} problems")
-        
-        # Create 5-10 submissions per contest
-        num_submissions = random.randint(5, 10)
-        
-        for i in range(num_submissions):
-            user = all_users[i % len(all_users)]
-            problem = contest_problems[i % len(contest_problems)]
-            
-            try:
-                # Determine if this is a late submission
-                # 80% on-time, 20% late
-                is_late = random.random() < 0.2
-                
-                # Create submission via repository directly
-                submission = problem_repo.create_submission(
-                    problem_id=problem.id,
-                    submission_create=SubmissionCreate(
-                        programming_language=random.choice(["python", "cpp", "java", "javascript"]),
-                        code=f"// Contest submission for {problem.title}\ndef solve():\n    pass"
-                    ),
-                    user_id=user.id,
-                    username=user.username,
-                    contest_id=contest.id,
-                    is_contest_submission=True,
-                    is_late_submission=is_late
-                )
-                
-                # Randomly set some submissions to ACCEPTED
-                if random.random() < 0.3:
-                    problem_repo.update_submission_status(
-                        submission,
-                        SubmissionStatus.ACCEPTED.value,
-                        updated_by="system"
-                    )
-                
-                total_submissions += 1
-            except Exception as e:
-                pass
-    
-    print(f"Created {total_submissions} contest submissions")
-
-
-def seed_contest_managers(contest_service, contest_repo, users, admin):
-    """
-    Seed contest managers for team collaboration.
-    Adds managers to contests so they can collaborate on editing.
-    """
-    # Get all contests
-    contests = contest_repo.list_contests(limit=100)[0]
-    
-    if not contests:
-        return
-    
-    # Get users who can be managers (creators and regular users, not admin)
-    potential_managers = [u for u in users if u.id != admin.id]
-    
-    if not potential_managers:
-        return
-    
-    total_managers = 0
-    
-    for contest in contests[:3]:  # Add managers to first 3 contests
-        # Check if already has managers
-        existing_managers = contest_repo.list_contest_managers(contest.id)
-        if existing_managers:
-            continue
-        
-        # Add 1-2 managers per contest
-        num_managers = min(2, len(potential_managers))
-        
-        for i in range(num_managers):
-            manager_user = potential_managers[i % len(potential_managers)]
-            
-            # Don't add owner as manager
-            if manager_user.id == contest.owner_id:
-                continue
-            
-            try:
-                contest_repo.add_manager_to_contest(
-                    contest_id=contest.id,
-                    user_id=manager_user.id,
-                    added_by=admin.id
-                )
-                total_managers += 1
-            except Exception:
-                pass
-    
-    print(f"Created {total_managers} contest managers")
-
-
-def seed_contest_tickets(contest_service, contest_repo, problem_repo, users, admin):
-    """
-    Seed contest tickets/clarifications for contests.
-    Creates tickets with various statuses and responses.
-    """
-    from app.models.contest import ContestTicketStatus, ContestProblem
-    from app.repositories.contest_announcement_repository import ContestTicketRepository
+    from app.models.problem import SubmissionStatus
+    from app.models.user import UserRole
+    from app.repositories.contest_repository import ContestRepository
+    from app.repositories.contest_registration_repository import ContestRegistrationRepository
     import random
     
     # Get all contests
-    contests = contest_repo.list_contests(limit=100)[0]
+    contests_result = contest_service.list_contests(current_user=admin)
+    contests = contests_result.get("items", [])
     
     if not contests:
         return
     
-    # Get the db session from contest_repo
-    db = contest_repo.db
-    ticket_repo = ContestTicketRepository(db)
-    
-    # Get users who can create tickets (regular users and creators)
+    # Get users for submissions (exclude admin, use creators and regular users)
     regular_users = [u for u in users if u.role == UserRole.USER]
     creators = [u for u in users if u.role == UserRole.CREATOR]
-    all_users = regular_users + creators
+    submitters = regular_users + creators
     
-    if not all_users:
-        return
+    if not submitters:
+        submitters = [admin]
     
-    # Ticket templates
-    ticket_templates = [
-        {
-            "title": "Clarification on input constraints",
-            "content": "The problem states that n can be up to 10^5, but the sample input has n=10^6. Which one is correct?",
-        },
-        {
-            "title": "Question about time limit",
-            "content": "What is the time limit for this problem? Is it 1 second or 2 seconds?",
-        },
-        {
-            "title": "Ambiguous problem statement",
-            "content": "The problem statement mentions 'adjacent elements' but doesn't clarify if it's horizontal adjacency only or both horizontal and vertical. Could you please clarify?",
-        },
-        {
-            "title": "Output format question",
-            "content": "Should the output be printed on a single line or can it be on multiple lines? The problem statement is not clear about this.",
-        },
-        {
-            "title": "Edge case clarification",
-            "content": "What should the output be when the input array is empty? Should we print '0' or nothing at all?",
-        },
-        {
-            "title": "Memory limit question",
-            "content": "What is the memory limit for this problem? I'm getting Memory Limit Exceeded with my solution.",
-        },
-        {
-            "title": "Multiple test cases handling",
-            "content": "Does the problem have multiple test cases? If so, how should we handle input/output for them?",
-        },
-        {
-            "title": "Integer overflow concern",
-            "content": "The intermediate results might exceed 32-bit integer range. Should we use 64-bit integers or arbitrary precision?",
-        },
-    ]
+    # Status distribution for realistic contest data
+    # Most submissions are wrong, some are accepted
+    status_weights = {
+        SubmissionStatus.ACCEPTED: 15,           # 15% accepted
+        SubmissionStatus.WRONG_ANSWER: 45,       # 45% wrong answer
+        SubmissionStatus.TIME_LIMIT_EXCEEDED: 15, # 15% TLE
+        SubmissionStatus.MEMORY_LIMIT_EXCEEDED: 5, # 5% MLE
+        SubmissionStatus.SYNTAX_ERROR: 15,       # 15% syntax error
+        SubmissionStatus.PENDING: 5              # 5% pending
+    }
     
-    # Response templates for managers
-    response_templates = [
-        "Thank you for your question. The constraint should be 1 <= n <= 10^6. We've updated the problem statement accordingly.",
-        "The time limit for this problem is 2 seconds per test case.",
-        "Adjacent elements refer to horizontally adjacent elements only. We apologize for the confusion.",
-        "The output should be on a single line, separated by spaces.",
-        "For an empty array, please output '0'.",
-        "The memory limit is 256 MB.",
-        "Yes, there are multiple test cases. Please read until EOF.",
-        "Yes, you should use 64-bit integers (long long in C++, int64 in Python).",
-    ]
+    # Build status list based on weights
+    status_pool = []
+    for status, weight in status_weights.items():
+        status_pool.extend([status.value] * weight)
     
-    total_tickets = 0
-    total_responses = 0
+    total_submissions_created = 0
+    submissions_per_contest = 220  # Target 200+ per contest
     
     for contest in contests:
         # Get problem IDs for this contest
-        problem_ids = []
-        try:
-            cps = db.query(ContestProblem).filter(ContestProblem.contest_id == contest.id).all()
-            problem_ids = [cp.problem_id for cp in cps]
-        except:
-            pass
+        contest_detail = contest_service.get_contest(contest.id, current_user=admin)
+        problem_ids = contest_detail.problem_ids
         
         if not problem_ids:
             continue
         
-        # Create 3-5 tickets per contest
-        num_tickets = random.randint(3, 5)
+        # Get contest time range
+        contest_start = contest.start_date
+        contest_end = contest.end_date
+        contest_duration = (contest_end - contest_start).total_seconds()
         
-        for i in range(num_tickets):
-            user = all_users[i % len(all_users)]
-            template = ticket_templates[i % len(ticket_templates)]
-            problem_id = problem_ids[i % len(problem_ids)] if problem_ids else None
+        # Get approved users for this contest (for private contests)
+        db = problem_repo.db
+        registration_repo = ContestRegistrationRepository(db)
+        
+        # For private contests, only approved users can submit
+        if contest.contest_type == "private":
+            approved_users = []
+            for user in submitters:
+                reg = registration_repo.get_registration_by_contest_and_user(contest.id, user.id)
+                if reg and reg.status == "approved":
+                    approved_users.append(user)
+            contest_submitters = approved_users if approved_users else [admin]
+        else:
+            contest_submitters = submitters
+        
+        if not contest_submitters:
+            contest_submitters = [admin]
+        
+        # Track per-user per-problem attempts to create realistic patterns
+        # Users typically try a problem multiple times before solving
+        user_problem_attempts = defaultdict(lambda: defaultdict(int))
+        user_problem_solved = defaultdict(set)
+        
+        submissions_for_this_contest = 0
+        
+        while submissions_for_this_contest < submissions_per_contest:
+            # Pick a random user
+            user = random.choice(contest_submitters)
             
-            # Determine ticket status and visibility
-            # 40% open, 40% answered, 20% closed
-            status_rand = random.random()
-            if status_rand < 0.4:
-                ticket_status = ContestTicketStatus.OPEN.value
-            elif status_rand < 0.8:
-                ticket_status = ContestTicketStatus.ANSWERED.value
+            # Pick a random problem
+            problem_id = random.choice(problem_ids)
+            
+            # Determine if this user has solved this problem
+            has_solved = problem_id in user_problem_solved[user.username]
+            
+            # If already solved, low chance of more submissions (maybe for practice)
+            if has_solved and random.random() > 0.1:
+                continue
+            
+            # Pick status based on weights
+            if has_solved:
+                # After solving, mostly accepted (practice) or some random
+                if random.random() < 0.8:
+                    status = SubmissionStatus.ACCEPTED.value
+                else:
+                    status = random.choice(status_pool)
             else:
-                ticket_status = ContestTicketStatus.CLOSED.value
+                # Before solving, weighted distribution
+                # Higher chance of wrong answers early
+                status = random.choice(status_pool)
             
-            # 30% public, 70% private
-            is_public = random.random() < 0.3
+            # Calculate submission time within contest
+            # Distribute submissions throughout contest duration
+            # Earlier submissions more likely (front-loaded)
+            time_progress = random.betavariate(2, 3)  # Skewed toward start
+            submission_time = contest_start + timedelta(
+                seconds=int(contest_duration * time_progress)
+            )
             
+            # If user solved this problem, ensure accepted submissions come after
+            if has_solved:
+                # Make sure it's after their first solve time
+                pass  # Already handled by not creating too many post-solve
+            
+            # Create submission via repository (bypass service to set custom time)
             try:
-                ticket = ticket_repo.create_ticket(
-                    contest_id=contest.id,
-                    user_id=user.id,
-                    title=template["title"],
-                    content=template["content"],
+                from app.schemas import SubmissionCreate
+                
+                # Create submission normally
+                submission = problem_repo.create_submission(
                     problem_id=problem_id,
-                    is_public=is_public
+                    submission_create=SubmissionCreate(
+                        programming_language=random.choice(["python", "cpp", "java", "c"]),
+                        code=f"// Submission {submissions_for_this_contest} for problem {problem_id}"
+                    ),
+                    user_id=user.id,
+                    username=user.username
                 )
                 
-                # Update status if not open
-                if ticket_status != ContestTicketStatus.OPEN.value:
-                    ticket = ticket_repo.update_ticket_status(ticket, ticket_status)
+                # Update status
+                problem_repo.update_submission_status(
+                    submission, 
+                    status, 
+                    updated_by="system"
+                )
                 
-                total_tickets += 1
+                # Update submission time (hack: direct update since we need specific timing)
+                submission.submission_time = submission_time
+                db.commit()
                 
-                # Add response for answered/closed tickets
-                if ticket_status in [ContestTicketStatus.ANSWERED.value, ContestTicketStatus.CLOSED.value]:
-                    try:
-                        response = ticket_repo.create_response(
-                            ticket_id=ticket.id,
-                            responder_id=admin.id,  # Admin responds
-                            content=response_templates[i % len(response_templates)]
-                        )
-                        total_responses += 1
-                    except Exception:
-                        pass
+                submissions_for_this_contest += 1
+                total_submissions_created += 1
+                
+                # Track if solved
+                if status == SubmissionStatus.ACCEPTED.value:
+                    user_problem_solved[user.username].add(problem_id)
+                
+                # Track attempts
+                user_problem_attempts[user.username][problem_id] += 1
+                
             except Exception:
                 pass
+        
+        print(f"Created {submissions_for_this_contest} submissions for contest '{contest.title}'")
     
-    print(f"Created {total_tickets} contest tickets with {total_responses} responses")
+    print(f"Created total {total_submissions_created} contest submissions across all contests")
 
+
+
+def seed_badges(db, users, admin):
+    """
+    Seed badges and user achievements.
+    Creates various achievement badges and initializes progress for users.
+    """
+    from app.services.badge_service import BadgeService
+    from app.models.badge import BadgeCriteriaType
+    
+    badge_service = BadgeService(db)
+    
+    # Check if badges already exist
+    existing_badges, _ = badge_service.badge_repo.list_badges(limit=10)
+    if len(existing_badges) >= 5:
+        print("Badges already exist, skipping badge seeding")
+        return
+    
+    # Define badge templates
+    badge_templates = [
+        {
+            "name": "Novice Solver",
+            "description": "Solve your first problem! Welcome to the world of competitive programming.",
+            "criteria_type": BadgeCriteriaType.PROBLEMS_SOLVED.value,
+            "criteria_value": 1,
+            "icon": "🎯",
+        },
+        {
+            "name": "Problem Solver",
+            "description": "Solve 10 problems. You're getting the hang of this!",
+            "criteria_type": BadgeCriteriaType.PROBLEMS_SOLVED.value,
+            "criteria_value": 10,
+            "icon": "🧩",
+        },
+        {
+            "name": "Algorithm Expert",
+            "description": "Solve 50 problems. You're becoming an algorithm master!",
+            "criteria_type": BadgeCriteriaType.PROBLEMS_SOLVED.value,
+            "criteria_value": 50,
+            "icon": "🏆",
+        },
+        {
+            "name": "Code Legend",
+            "description": "Solve 100 problems. You're a competitive programming legend!",
+            "criteria_type": BadgeCriteriaType.PROBLEMS_SOLVED.value,
+            "criteria_value": 100,
+            "icon": "👑",
+        },
+        {
+            "name": "Contest Participant",
+            "description": "Participate in your first contest. Every journey begins with a single step!",
+            "criteria_type": BadgeCriteriaType.CONTESTS_PARTICIPATED.value,
+            "criteria_value": 1,
+            "icon": "🏁",
+        },
+        {
+            "name": "Contest Veteran",
+            "description": "Participate in 5 contests. You're a seasoned competitor!",
+            "criteria_type": BadgeCriteriaType.CONTESTS_PARTICIPATED.value,
+            "criteria_value": 5,
+            "icon": "🏅",
+        },
+        {
+            "name": "3-Day Streak",
+            "description": "Solve problems for 3 consecutive days. Consistency is key!",
+            "criteria_type": BadgeCriteriaType.STREAK_DAYS.value,
+            "criteria_value": 3,
+            "icon": "🔥",
+        },
+        {
+            "name": "7-Day Streak",
+            "description": "Solve problems for 7 consecutive days. A full week of dedication!",
+            "criteria_type": BadgeCriteriaType.STREAK_DAYS.value,
+            "criteria_value": 7,
+            "icon": "⚡",
+        },
+        {
+            "name": "Perfect Solve",
+            "description": "Solve a problem on your first attempt. Precision and skill!",
+            "criteria_type": BadgeCriteriaType.PERFECT_SOLVES.value,
+            "criteria_value": 1,
+            "icon": "💎",
+        },
+        {
+            "name": "Perfect Master",
+            "description": "Solve 10 problems on your first attempt. Your accuracy is impressive!",
+            "criteria_type": BadgeCriteriaType.PERFECT_SOLVES.value,
+            "criteria_value": 10,
+            "icon": "⭐",
+        },
+        {
+            "name": "Active Submitter",
+            "description": "Make 50 submissions. Practice makes perfect!",
+            "criteria_type": BadgeCriteriaType.SUBMISSIONS_MADE.value,
+            "criteria_value": 50,
+            "icon": "📝",
+        },
+        {
+            "name": "Power User",
+            "description": "Make 200 submissions. You're actively improving your skills!",
+            "criteria_type": BadgeCriteriaType.SUBMISSIONS_MADE.value,
+            "criteria_value": 200,
+            "icon": "🚀",
+        },
+        {
+            "name": "Community Member",
+            "description": "Create 5 forum posts or comments. Thanks for being part of the community!",
+            "criteria_type": BadgeCriteriaType.FORUM_POSTS.value,
+            "criteria_value": 5,
+            "icon": "💬",
+        },
+        {
+            "name": "Forum Influencer",
+            "description": "Create 20 forum posts or comments. Your contributions help others learn!",
+            "criteria_type": BadgeCriteriaType.FORUM_POSTS.value,
+            "criteria_value": 20,
+            "icon": "📢",
+        },
+        {
+            "name": "Problem Creator",
+            "description": "Create 5 problems. Thank you for contributing to the platform!",
+            "criteria_type": BadgeCriteriaType.PROBLEMS_CREATED.value,
+            "criteria_value": 5,
+            "icon": "✏️",
+        },
+        {
+            "name": "Veteran Member",
+            "description": "Be a member for 30 days. Welcome to the community!",
+            "criteria_type": BadgeCriteriaType.ACCOUNT_AGE.value,
+            "criteria_value": 30,
+            "icon": "📅",
+        },
+    ]
+    
+    created_badges = []
+    for template in badge_templates:
+        try:
+            badge = badge_service.create_badge(
+                name=template["name"],
+                description=template["description"],
+                criteria_type=template["criteria_type"],
+                criteria_value=template["criteria_value"],
+                icon=template["icon"],
+                created_by=admin.id
+            )
+            created_badges.append(badge)
+            print(f"Created badge: {badge.name}")
+        except Exception as e:
+            print(f"Failed to create badge {template['name']}: {e}")
+    
+    # Initialize badges for all users and check their progress
+    print("Initializing badges for users...")
+    for user in users[:10]:  # Initialize for first 10 users to save time
+        try:
+            badge_service.initialize_user_badges(user.id)
+            # Check and update their badges
+            newly_earned = badge_service.check_and_update_badges(user.id)
+            if newly_earned:
+                print(f"  User {user.username} earned {len(newly_earned)} badges")
+        except Exception as e:
+            print(f"  Failed to initialize badges for {user.username}: {e}")
+    
+    print(f"Created {len(created_badges)} badges")
+
+
+def seed_contest_6_team_submissions(db, admin):
+    """
+    Seed at least 150 team submissions specifically for contest_id 6.
+    This ensures there's enough data to test the team leaderboard.
+    """
+    from app.services.contest_service import ContestService
+    from app.repositories.problem_repository import ProblemRepository
+    from app.repositories.team_repository import TeamRepository
+    from app.models.problem import SubmissionStatus
+    from datetime import timedelta
+    import random
+    
+    contest_service = ContestService(db)
+    problem_repo = ProblemRepository(db)
+    team_repo = TeamRepository(db)
+    
+    # Get contest 6
+    contest = contest_service.contest_repo.get_contest_by_id(6)
+    if not contest:
+        print("Contest 6 not found, skipping team submissions seeding")
+        return
+    
+    # Get teams
+    teams, _ = team_repo.list_teams(limit=10)
+    if not teams:
+        print("No teams found, skipping team submissions seeding")
+        return
+    
+    # Get contest problems
+    problem_ids = contest.problem_ids
+    if not problem_ids:
+        print("Contest 6 has no problems, skipping team submissions seeding")
+        return
+    
+    contest_start = contest.start_date
+    contest_end = contest.end_date
+    contest_duration = (contest_end - contest_start).total_seconds()
+    
+    # Status distribution
+    status_weights = {
+        SubmissionStatus.ACCEPTED: 25,
+        SubmissionStatus.WRONG_ANSWER: 35,
+        SubmissionStatus.TIME_LIMIT_EXCEEDED: 15,
+        SubmissionStatus.MEMORY_LIMIT_EXCEEDED: 5,
+        SubmissionStatus.SYNTAX_ERROR: 15,
+        SubmissionStatus.PENDING: 5
+    }
+    
+    status_pool = []
+    for status, weight in status_weights.items():
+        status_pool.extend([status.value] * weight)
+    
+    total_submissions = 0
+    target_submissions = 150  # At least 150 submissions
+    
+    print(f"Creating team submissions for contest 6 (target: {target_submissions})...")
+    
+    # For each team, have members make submissions
+    for team in teams:
+        team_members = team.active_members
+        if not team_members:
+            continue
+        
+        # Track which problems the team has solved
+        team_solved_problems = set()
+        
+        for member in team_members:
+            # Each member makes 15-25 submissions
+            num_submissions = random.randint(15, 25)
+            
+            for _ in range(num_submissions):
+                if total_submissions >= target_submissions:
+                    break
+                
+                # Pick a random problem
+                problem_id = random.choice(problem_ids)
+                
+                # Determine submission time (within contest duration)
+                time_offset = random.uniform(0, contest_duration * 0.9)
+                submission_time = contest_start + timedelta(seconds=time_offset)
+                
+                # If team already solved this problem, higher chance of accepted
+                if problem_id in team_solved_problems:
+                    submission_status = SubmissionStatus.ACCEPTED.value if random.random() > 0.25 else random.choice(status_pool)
+                else:
+                    submission_status = random.choice(status_pool)
+                
+                # Create submission
+                try:
+                    submission = problem_repo.create_submission(
+                        problem_id=problem_id,
+                        submission_create=SubmissionCreate(
+                            programming_language=random.choice(["python", "cpp", "java", "javascript"]),
+                            code=f"# Team {team.name} - Solution by {member.user.username}\ndef solve():\n    pass"
+                        ),
+                        user_id=member.user_id,
+                        username=member.user.username
+                    )
+                    
+                    # Update submission time and status
+                    submission.submission_time = submission_time
+                    problem_repo.update_submission_status(submission, submission_status, updated_by="system")
+                    
+                    if submission_status == SubmissionStatus.ACCEPTED.value:
+                        team_solved_problems.add(problem_id)
+                    
+                    total_submissions += 1
+                except Exception:
+                    pass
+            
+            if total_submissions >= target_submissions:
+                break
+        
+        if total_submissions >= target_submissions:
+            break
+    
+    print(f"Created {total_submissions} team submissions for contest 6")

@@ -204,35 +204,18 @@ class ProblemService:
             )
         self.problem_repo.delete_testcase(testcase, problem, current_user.username)
 
-    def create_submission(self, problem_id: int, submission_create: SubmissionCreate, user_id: int, username: str, current_user, contest_id: Optional[int] = None, is_contest_submission: bool = False, is_late_submission: bool = False):
+    def create_submission(self, problem_id: int, submission_create: SubmissionCreate, user_id: int, username: str, current_user):
         # This ensures the user can see the problem before submitting
         self.get_problem(problem_id, current_user)
-        return self.problem_repo.create_submission(
-            problem_id, 
-            submission_create, 
-            user_id, 
-            username,
-            contest_id=contest_id,
-            is_contest_submission=is_contest_submission,
-            is_late_submission=is_late_submission
-        )
+        return self.problem_repo.create_submission(problem_id, submission_create, user_id, username)
 
-    def list_submissions(self, problem_id: int, current_user, exclude_contest_submissions: bool = True):
-        """List submissions for a problem.
-        
-        Args:
-            problem_id: The problem ID
-            current_user: The current user
-            exclude_contest_submissions: If True (default), exclude contest submissions
-                so that when viewing submissions for a problem outside of a contest,
-                only individual problem submissions are shown.
-        """
+    def list_submissions(self, problem_id: int, current_user):
         problem = self.get_problem(problem_id, current_user)
         # Only admin or owner can see all submissions? User query didn't specify, 
         # but usually only admins/creators see all.
         if current_user.role not in [UserRole.ADMIN, UserRole.CREATOR]:
              raise HTTPException(status_code=403, detail="Not authorized to view submissions")
-        return self.problem_repo.list_submissions_for_problem(problem_id, exclude_contest_submissions=exclude_contest_submissions)
+        return self.problem_repo.list_submissions_for_problem(problem_id)
 
     def get_submission(self, submission_id: int, current_user):
         submission = self.problem_repo.get_submission_by_id(submission_id)
@@ -343,19 +326,9 @@ class ProblemService:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Tag already exists")
         return self.problem_repo.create_tag(tag_name, created_by=current_user.username)
 
-    def problem_submission_stats(self, current_user, exclude_contest_submissions: bool = True):
-        """Get submission statistics per problem.
-        
-        Args:
-            current_user: The current user
-            exclude_contest_submissions: If True (default), exclude contest submissions
-        """
+    def problem_submission_stats(self, current_user):
         problems, _ = self.problem_repo.list_problems()
-        all_submissions = self.problem_repo.list_all_submissions()
-        if exclude_contest_submissions:
-            submissions = [s for s in all_submissions if not s.is_contest_submission]
-        else:
-            submissions = all_submissions
+        submissions = self.problem_repo.list_all_submissions()
         counts = {}
         for submission in submissions:
             counts[submission.problem_id] = counts.get(submission.problem_id, 0) + 1
@@ -367,19 +340,6 @@ class ProblemService:
             )
             for problem in problems
         ]
-
-    def list_submissions_for_contest(self, contest_id: int, problem_id: Optional[int] = None):
-        """List all submissions for a contest.
-        
-        Args:
-            contest_id: The contest ID
-            problem_id: Optional problem ID to filter by
-        """
-        return self.problem_repo.list_submissions_for_contest(contest_id, problem_id=problem_id)
-
-    def list_submissions_for_problem_in_contest(self, problem_id: int, contest_id: int):
-        """List submissions for a specific problem within a specific contest."""
-        return self.problem_repo.list_submissions_for_problem_in_contest(problem_id, contest_id)
 
     def get_editorial(self, problem_id: int, current_user):
         # Check if user can see problem first

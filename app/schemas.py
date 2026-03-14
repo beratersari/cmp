@@ -1,9 +1,10 @@
+from __future__ import annotations
 from pydantic import BaseModel, EmailStr, Field, field_validator, ConfigDict
 from typing import Optional, List, Generic, TypeVar
 from datetime import datetime
 from app.models.user import UserRole
 from app.models.problem import SubmissionStatus, VoteType, VoteTargetType
-from app.models.contest import ContestType, ContestRegistrationStatus
+from app.models.contest import ContestType, ContestRegistrationStatus, ContestMode
 
 T = TypeVar('T')
 
@@ -205,6 +206,48 @@ class CreatorLeaderboardEntryOut(BaseModel):
     username: str = Field(..., description="Creator username")
     created_problem_count: int = Field(..., description="Number of problems created")
 
+
+class ContestProblemSubmissionDetail(BaseModel):
+    """Detailed submission info for a specific problem in contest leaderboard."""
+    problem_id: int = Field(..., description="Problem ID")
+    problem_title: str = Field(..., description="Problem title")
+    accepted: bool = Field(..., description="Whether the problem was solved (accepted)")
+    accepted_at_minutes: Optional[int] = Field(None, description="Minutes after contest start when first accepted submission was made")
+    incorrect_submissions: int = Field(0, description="Number of incorrect submissions before the first accepted submission")
+    penalty_minutes: int = Field(0, description="Total penalty for this problem (time to solve + 15 min per incorrect submission)")
+
+
+# Contest User Submissions Grouped by Problem
+class UserProblemSubmissionsOut(BaseModel):
+    """Submissions for a specific problem by a user."""
+    problem_id: int = Field(..., description="Problem ID")
+    problem_title: str = Field(..., description="Problem title")
+    submissions: List["SubmissionOut"] = Field(default=[], description="List of submissions for this problem")
+    accepted: bool = Field(..., description="Whether problem was solved")
+    first_accepted_at: Optional[datetime] = Field(None, description="When first accepted submission was made")
+    total_submissions: int = Field(..., description="Total number of submissions")
+    incorrect_submissions: int = Field(..., description="Number of incorrect submissions before first accepted")
+
+
+class ContestUserSubmissionsGroupedOut(BaseModel):
+    """User submissions grouped by problem for a contest."""
+    contest_id: int = Field(..., description="Contest ID")
+    username: str = Field(..., description="Username")
+    problems: List[UserProblemSubmissionsOut] = Field(default=[], description="Submissions grouped by problem")
+    total_problems_solved: int = Field(..., description="Number of problems solved")
+    total_submissions: int = Field(..., description="Total number of submissions")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ContestLeaderboardEntryOut(BaseModel):
+    """Schema for contest leaderboard entry with ICPC-style scoring."""
+    username: str = Field(..., description="Username")
+    problems_solved: int = Field(..., description="Number of problems solved during the contest")
+    penalty_time: int = Field(..., description="Total penalty time in minutes (time to solve + 15 min per wrong submission before accepted)")
+    rank: int = Field(..., description="Rank in the contest (1-indexed, lower rank is better)")
+    problem_details: List[ContestProblemSubmissionDetail] = Field(default=[], description="Detailed submission info for each problem")
+
 class ProblemsByOwnerOut(BaseModel):
     owner_username: str = Field(..., description="The username of the problem owner")
     problems: List[ProblemOut] = Field(..., description="Problems created by this owner")
@@ -228,10 +271,6 @@ class SubmissionOut(SubmissionBase):
     updated_by: Optional[str] = Field(None, description="The username that last updated the submission")
     update_time: Optional[datetime] = Field(None, description="The last time the submission was updated")
     submission_time: datetime = Field(..., description="The timestamp when the submission was made")
-    # Contest-related fields to separate contest submissions from individual problem submissions
-    contest_id: Optional[int] = Field(None, description="The contest ID if this is a contest submission")
-    is_contest_submission: bool = Field(False, description="Whether this submission was made during a contest")
-    is_late_submission: bool = Field(False, description="Whether this contest submission was made after contest end time")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -411,6 +450,9 @@ class ContestBase(BaseModel):
     start_date: datetime = Field(..., description="Start date and time of the contest")
     end_date: datetime = Field(..., description="End date and time of the contest")
     contest_type: ContestType = Field(default=ContestType.PUBLIC, description="Type of contest: public, private, or archived")
+    penalty_minutes: int = Field(default=15, ge=0, description="Penalty in minutes per wrong submission")
+    contest_mode: ContestMode = Field(default=ContestMode.INDIVIDUAL, description="Contest mode: individual or team")
+    team_size: Optional[int] = Field(None, ge=1, description="Maximum team size for team contests (null for individual)")
 
     @field_validator("end_date")
     @classmethod
@@ -418,6 +460,16 @@ class ContestBase(BaseModel):
         start_date = info.data.get("start_date")
         if start_date and v <= start_date:
             raise ValueError("End date must be after start date")
+        return v
+
+    @field_validator("team_size")
+    @classmethod
+    def validate_team_size(cls, v: Optional[int], info) -> Optional[int]:
+        contest_mode = info.data.get("contest_mode")
+        if contest_mode == ContestMode.TEAM and v is None:
+            raise ValueError("Team size is required for team contests")
+        if contest_mode == ContestMode.INDIVIDUAL and v is not None:
+            raise ValueError("Team size should not be set for individual contests")
         return v
 
 
@@ -431,6 +483,9 @@ class ContestUpdate(BaseModel):
     start_date: Optional[datetime] = Field(None, description="Updated start date and time")
     end_date: Optional[datetime] = Field(None, description="Updated end date and time")
     contest_type: Optional[ContestType] = Field(None, description="Updated contest type")
+    penalty_minutes: Optional[int] = Field(None, ge=0, description="Updated penalty in minutes per wrong submission")
+    contest_mode: Optional[ContestMode] = Field(None, description="Updated contest mode: individual or team")
+    team_size: Optional[int] = Field(None, ge=1, description="Updated maximum team size for team contests")
 
     @field_validator("end_date")
     @classmethod
@@ -463,6 +518,9 @@ class ContestOut(BaseModel):
     update_time: Optional[datetime] = Field(None, description="The last time the contest was updated")
     created_at: datetime = Field(..., description="The creation timestamp of the contest")
     problem_ids: List[int] = Field(default=[], description="List of problem IDs in the contest")
+    penalty_minutes: int = Field(..., description="Penalty in minutes per wrong submission")
+    contest_mode: ContestMode = Field(..., description="Contest mode: individual or team")
+    team_size: Optional[int] = Field(None, description="Maximum team size for team contests (null for individual)")
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -557,7 +615,7 @@ class ContestDiscussionDetailOut(ContestDiscussionOut):
 # Contest Registration Schemas
 class ContestRegistrationCreate(BaseModel):
     """Schema for registering to a contest."""
-    pass  # No additional fields needed - user_id comes from auth, contest_id from path
+    team_id: Optional[int] = Field(None, description="Team ID for team contest registration (null for individual)")
 
 
 class ContestRegistrationUpdate(BaseModel):
@@ -569,8 +627,11 @@ class ContestRegistrationOut(BaseModel):
     """Schema for contest registration output."""
     id: int = Field(..., description="Registration ID")
     contest_id: int = Field(..., description="Contest ID")
-    user_id: int = Field(..., description="User ID")
+    user_id: int = Field(..., description="User ID who registered")
     username: Optional[str] = Field(None, description="Username of registered user")
+    team_id: Optional[int] = Field(None, description="Team ID if team registration")
+    team_name: Optional[str] = Field(None, description="Team name if team registration")
+    is_team_registration: bool = Field(False, description="Whether this is a team registration")
     status: ContestRegistrationStatus = Field(..., description="Registration status")
     registered_at: datetime = Field(..., description="When the user registered")
     approved_at: Optional[datetime] = Field(None, description="When the registration was approved")
@@ -595,8 +656,84 @@ class UserRegistrationOut(BaseModel):
     contest_title: str = Field(..., description="Contest title")
     status: ContestRegistrationStatus = Field(..., description="Registration status")
     registered_at: datetime = Field(..., description="When the user registered")
+    team_id: Optional[int] = Field(None, description="Team ID if team registration")
+    team_name: Optional[str] = Field(None, description="Team name if team registration")
+    is_team_registration: bool = Field(False, description="Whether this is a team registration")
 
     model_config = ConfigDict(from_attributes=True)
+
+
+# Team Schemas
+class TeamCreate(BaseModel):
+    """Schema for creating a team."""
+    name: str = Field(..., description="Team name (unique)", min_length=3, max_length=100)
+    description: Optional[str] = Field(None, description="Team description", max_length=500)
+
+
+class TeamUpdate(BaseModel):
+    """Schema for updating a team."""
+    name: Optional[str] = Field(None, description="Team name", min_length=3, max_length=100)
+    description: Optional[str] = Field(None, description="Team description", max_length=500)
+
+
+class TeamMemberOut(BaseModel):
+    """Schema for team member output."""
+    user_id: int = Field(..., description="User ID")
+    username: Optional[str] = Field(None, description="Username")
+    role: str = Field(..., description="Member role: leader or member")
+    status: str = Field(..., description="Membership status")
+    joined_at: datetime = Field(..., description="When the member joined")
+
+
+class TeamOut(BaseModel):
+    """Schema for team output."""
+    id: int = Field(..., description="Team ID")
+    name: str = Field(..., description="Team name")
+    description: Optional[str] = Field(None, description="Team description")
+    leader_id: int = Field(..., description="Team leader user ID")
+    leader_username: Optional[str] = Field(None, description="Team leader username")
+    member_count: int = Field(..., description="Number of active members")
+    members: List[TeamMemberOut] = Field(default=[], description="Team members")
+    created_at: datetime = Field(..., description="When the team was created")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class TeamSummaryOut(BaseModel):
+    """Schema for team summary (for list views)."""
+    id: int = Field(..., description="Team ID")
+    name: str = Field(..., description="Team name")
+    description: Optional[str] = Field(None, description="Team description")
+    leader_id: int = Field(..., description="Team leader user ID")
+    leader_username: Optional[str] = Field(None, description="Team leader username")
+    member_count: int = Field(..., description="Number of active members")
+    created_at: datetime = Field(..., description="When the team was created")
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+# Team Contest Leaderboard Schemas
+class TeamContestProblemDetail(BaseModel):
+    """Problem submission details for team contest leaderboard."""
+    problem_id: int = Field(..., description="Problem ID")
+    problem_title: str = Field(..., description="Problem title")
+    accepted: bool = Field(..., description="Whether the problem was solved by the team")
+    accepted_at_minutes: Optional[int] = Field(None, description="Minutes after contest start when first team member solved it")
+    incorrect_submissions: int = Field(0, description="Total incorrect submissions by all team members before first accepted")
+    penalty_minutes: int = Field(0, description="Total penalty for this problem")
+    solved_by: Optional[str] = Field(None, description="Username of team member who first solved this problem")
+
+
+class TeamContestLeaderboardEntryOut(BaseModel):
+    """Schema for team contest leaderboard entry."""
+    team_id: int = Field(..., description="Team ID")
+    team_name: str = Field(..., description="Team name")
+    member_count: int = Field(..., description="Number of team members")
+    problems_solved: int = Field(..., description="Number of problems solved by the team")
+    penalty_time: int = Field(..., description="Total penalty time in minutes")
+    rank: int = Field(..., description="Rank in the contest (1-indexed)")
+    problem_details: List[TeamContestProblemDetail] = Field(default=[], description="Detailed submission info for each problem")
+    member_usernames: List[str] = Field(default=[], description="List of team member usernames")
 
 
 # Contest Announcement Schemas
@@ -625,100 +762,5 @@ class ContestAnnouncementOut(BaseModel):
     is_published: bool = Field(..., description="Whether the announcement is published")
     created_at: datetime = Field(..., description="When the announcement was created")
     updated_at: Optional[datetime] = Field(None, description="When the announcement was last updated")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-# Contest Manager Schemas
-class ContestManagerOut(BaseModel):
-    """Schema for contest manager output."""
-    id: int = Field(..., description="Manager entry ID")
-    contest_id: int = Field(..., description="Contest ID")
-    user_id: int = Field(..., description="Manager user ID")
-    username: Optional[str] = Field(None, description="Manager username")
-    added_by: int = Field(..., description="User ID who added this manager")
-    adder_username: Optional[str] = Field(None, description="Username of user who added this manager")
-    added_at: datetime = Field(..., description="When the manager was added")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-# Contest Ticket Schemas
-class ContestTicketCreate(BaseModel):
-    """Schema for creating a contest ticket."""
-    title: str = Field(..., description="Ticket title", min_length=1, max_length=200)
-    content: str = Field(..., description="Ticket content/question", min_length=1)
-    problem_id: Optional[int] = Field(None, description="Problem ID this ticket is about (optional)")
-    is_public: bool = Field(default=False, description="Whether this ticket is visible to all contestants")
-
-
-class ContestTicketUpdate(BaseModel):
-    """Schema for updating a contest ticket."""
-    title: Optional[str] = Field(None, description="Ticket title", min_length=1, max_length=200)
-    content: Optional[str] = Field(None, description="Ticket content/question", min_length=1)
-    is_public: Optional[bool] = Field(None, description="Whether this ticket is visible to all contestants")
-
-
-class ContestTicketStatusUpdate(BaseModel):
-    """Schema for updating ticket status."""
-    status: str = Field(..., description="New status: open, answered, or closed")
-
-
-class ContestTicketResponseCreate(BaseModel):
-    """Schema for creating a ticket response."""
-    content: str = Field(..., description="Response content", min_length=1)
-
-
-class ContestTicketResponseUpdate(BaseModel):
-    """Schema for updating a ticket response."""
-    content: str = Field(..., description="Response content", min_length=1)
-
-
-class ContestTicketResponseOut(BaseModel):
-    """Schema for ticket response output."""
-    id: int = Field(..., description="Response ID")
-    ticket_id: int = Field(..., description="Ticket ID")
-    responder_id: int = Field(..., description="Responder user ID")
-    responder_username: Optional[str] = Field(None, description="Responder username")
-    content: str = Field(..., description="Response content")
-    created_at: datetime = Field(..., description="When the response was created")
-    updated_at: Optional[datetime] = Field(None, description="When the response was last updated")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ContestTicketOut(BaseModel):
-    """Schema for contest ticket output."""
-    id: int = Field(..., description="Ticket ID")
-    contest_id: int = Field(..., description="Contest ID")
-    problem_id: Optional[int] = Field(None, description="Problem ID")
-    problem_title: Optional[str] = Field(None, description="Problem title")
-    user_id: int = Field(..., description="User ID who created the ticket")
-    username: Optional[str] = Field(None, description="Username of ticket creator")
-    title: str = Field(..., description="Ticket title")
-    content: str = Field(..., description="Ticket content")
-    status: str = Field(..., description="Ticket status: open, answered, closed")
-    is_public: bool = Field(..., description="Whether ticket is visible to all contestants")
-    created_at: datetime = Field(..., description="When the ticket was created")
-    updated_at: Optional[datetime] = Field(None, description="When the ticket was last updated")
-    responses: List[ContestTicketResponseOut] = Field(default=[], description="List of responses")
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ContestTicketSummaryOut(BaseModel):
-    """Schema for contest ticket summary (without responses)."""
-    id: int = Field(..., description="Ticket ID")
-    contest_id: int = Field(..., description="Contest ID")
-    problem_id: Optional[int] = Field(None, description="Problem ID")
-    problem_title: Optional[str] = Field(None, description="Problem title")
-    user_id: int = Field(..., description="User ID who created the ticket")
-    username: Optional[str] = Field(None, description="Username of ticket creator")
-    title: str = Field(..., description="Ticket title")
-    status: str = Field(..., description="Ticket status: open, answered, closed")
-    is_public: bool = Field(..., description="Whether ticket is visible to all contestants")
-    created_at: datetime = Field(..., description="When the ticket was created")
-    updated_at: Optional[datetime] = Field(None, description="When the ticket was last updated")
-    response_count: int = Field(0, description="Number of responses")
 
     model_config = ConfigDict(from_attributes=True)

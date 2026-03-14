@@ -12,6 +12,12 @@ class ContestType(str, enum.Enum):
     ARCHIVED = "archived"  # Only visible to owner/admin
 
 
+class ContestMode(str, enum.Enum):
+    """Contest participation mode."""
+    INDIVIDUAL = "individual"  # Individual participation
+    TEAM = "team"              # Team participation
+
+
 class ContestRegistrationStatus(str, enum.Enum):
     """Status of a user's contest registration."""
     PENDING = "pending"
@@ -33,12 +39,15 @@ class ContestProblem(Base):
 
 
 class ContestRegistration(Base):
-    """User registration for a contest."""
+    """User or team registration for a contest."""
     __tablename__ = "contest_registrations"
 
     id = Column(Integer, primary_key=True, index=True)
     contest_id = Column(Integer, ForeignKey("contests.id", ondelete="CASCADE"), nullable=False)
+    # For individual contests: user_id is set, team_id is null
+    # For team contests: team_id is set, user_id is the team leader who registered
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    team_id = Column(Integer, ForeignKey("teams.id", ondelete="CASCADE"), nullable=True)
     status = Column(String, default=ContestRegistrationStatus.PENDING.value, nullable=False)
     registered_at = Column(DateTime(timezone=True), server_default=func.now())
     approved_at = Column(DateTime(timezone=True), nullable=True)
@@ -48,38 +57,15 @@ class ContestRegistration(Base):
     contest = relationship("Contest", back_populates="registrations")
     user = relationship("User", foreign_keys=[user_id])
     approver = relationship("User", foreign_keys=[approved_by])
+    team = relationship("Team", back_populates="registrations")
 
     @property
     def is_approved(self) -> bool:
         return self.status == ContestRegistrationStatus.APPROVED.value
 
-
-class ContestManager(Base):
-    """Contest managers/collaborators who can edit the contest.
-    
-    This allows team collaboration on contests - managers can:
-    - Edit contest details
-    - Add/remove problems
-    - Manage registrations
-    - Create/edit/delete announcements
-    """
-    __tablename__ = "contest_managers"
-
-    id = Column(Integer, primary_key=True, index=True)
-    contest_id = Column(Integer, ForeignKey("contests.id", ondelete="CASCADE"), nullable=False)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    added_by = Column(Integer, ForeignKey("users.id"), nullable=False)
-    added_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    # Relationships
-    contest = relationship("Contest", back_populates="managers")
-    user = relationship("User", foreign_keys=[user_id])
-    adder = relationship("User", foreign_keys=[added_by])
-
-    __table_args__ = (
-        # Ensure a user can only be a manager once per contest
-        {'sqlite_autoincrement': True},
-    )
+    @property
+    def is_team_registration(self) -> bool:
+        return self.team_id is not None
 
 
 class Contest(Base):
@@ -97,13 +83,16 @@ class Contest(Base):
     update_time = Column(DateTime(timezone=True), server_default=func.now())
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
+    # Contest configuration fields
+    penalty_minutes = Column(Integer, default=15, nullable=False)  # Penalty per wrong submission
+    contest_mode = Column(String, default=ContestMode.INDIVIDUAL.value, nullable=False)  # individual or team
+    team_size = Column(Integer, nullable=True)  # Max team size for team contests (null for individual)
+
     # Relationships
     owner = relationship("User", foreign_keys=[owner_id])
     contest_problems = relationship("ContestProblem", back_populates="contest", cascade="all, delete-orphan", order_by="ContestProblem.order")
     registrations = relationship("ContestRegistration", back_populates="contest", cascade="all, delete-orphan")
     announcements = relationship("ContestAnnouncement", back_populates="contest", cascade="all, delete-orphan", order_by="ContestAnnouncement.created_at.desc()")
-    managers = relationship("ContestManager", back_populates="contest", cascade="all, delete-orphan")
-    tickets = relationship("ContestTicket", back_populates="contest", cascade="all, delete-orphan", order_by="ContestTicket.created_at.desc()")
 
     @property
     def problems(self):
@@ -133,9 +122,12 @@ class Contest(Base):
         return [r.user_id for r in self.registrations if r.is_approved]
 
     @property
-    def manager_user_ids(self) -> list[int]:
-        """Returns list of manager user IDs."""
-        return [m.user_id for m in self.managers]
+    def is_individual(self) -> bool:
+        return self.contest_mode == ContestMode.INDIVIDUAL.value
+
+    @property
+    def is_team(self) -> bool:
+        return self.contest_mode == ContestMode.TEAM.value
 
 
 class ContestAnnouncement(Base):
@@ -154,64 +146,3 @@ class ContestAnnouncement(Base):
     # Relationships
     contest = relationship("Contest", back_populates="announcements")
     author = relationship("User")
-
-
-class ContestTicketStatus(str, enum.Enum):
-    """Status of a contest ticket/clarification."""
-    OPEN = "open"          # Ticket is open, awaiting response
-    ANSWERED = "answered"  # Ticket has been answered by staff
-    CLOSED = "closed"      # Ticket is closed
-
-
-class ContestTicket(Base):
-    """Ticket/clarification for a contest problem.
-    
-    This allows contestants to ask questions about problems during a contest.
-    Common in competitive programming platforms like Codeforces.
-    """
-    __tablename__ = "contest_tickets"
-
-    id = Column(Integer, primary_key=True, index=True)
-    contest_id = Column(Integer, ForeignKey("contests.id", ondelete="CASCADE"), nullable=False)
-    problem_id = Column(Integer, ForeignKey("problems.id", ondelete="CASCADE"), nullable=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    title = Column(String, nullable=False)
-    content = Column(Text, nullable=False)
-    status = Column(String, default=ContestTicketStatus.OPEN.value, nullable=False)
-    is_public = Column(Boolean, default=False, nullable=False)  # If true, all contestants can see
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    # Relationships
-    contest = relationship("Contest", back_populates="tickets")
-    problem = relationship("Problem")
-    user = relationship("User", foreign_keys=[user_id])
-    responses = relationship("ContestTicketResponse", back_populates="ticket", cascade="all, delete-orphan", order_by="ContestTicketResponse.created_at")
-
-    @property
-    def is_open(self) -> bool:
-        return self.status == ContestTicketStatus.OPEN.value
-
-    @property
-    def is_answered(self) -> bool:
-        return self.status == ContestTicketStatus.ANSWERED.value
-
-    @property
-    def is_closed(self) -> bool:
-        return self.status == ContestTicketStatus.CLOSED.value
-
-
-class ContestTicketResponse(Base):
-    """Response to a contest ticket from staff (admin/owner/manager)."""
-    __tablename__ = "contest_ticket_responses"
-
-    id = Column(Integer, primary_key=True, index=True)
-    ticket_id = Column(Integer, ForeignKey("contest_tickets.id", ondelete="CASCADE"), nullable=False)
-    responder_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    content = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
-    # Relationships
-    ticket = relationship("ContestTicket", back_populates="responses")
-    responder = relationship("User")

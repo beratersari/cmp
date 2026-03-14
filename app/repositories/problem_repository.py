@@ -178,7 +178,7 @@ class ProblemRepository:
         self.db.delete(problem)
         self.db.commit()
 
-    def create_submission(self, problem_id: int, submission_create: SubmissionCreate, user_id: int, username: str, contest_id: Optional[int] = None, is_contest_submission: bool = False, is_late_submission: bool = False):
+    def create_submission(self, problem_id: int, submission_create: SubmissionCreate, user_id: int, username: str):
         submission = Submission(
             problem_id=problem_id,
             user_id=user_id,
@@ -187,50 +187,15 @@ class ProblemRepository:
             code=submission_create.code,
             status="PENDING",
             created_by=username,
-            updated_by=username,
-            contest_id=contest_id,
-            is_contest_submission=is_contest_submission,
-            is_late_submission=is_late_submission
+            updated_by=username
         )
         self.db.add(submission)
         self.db.commit()
         self.db.refresh(submission)
         return submission
 
-    def list_submissions_for_problem(self, problem_id: int, exclude_contest_submissions: bool = False):
-        """List submissions for a problem.
-        
-        Args:
-            problem_id: The problem ID
-            exclude_contest_submissions: If True, exclude submissions made during contests
-        """
-        query = self.db.query(Submission).filter(Submission.problem_id == problem_id)
-        if exclude_contest_submissions:
-            query = query.filter(Submission.is_contest_submission == False)
-        return query.all()
-
-    def list_submissions_for_contest(self, contest_id: int, problem_id: Optional[int] = None):
-        """List submissions for a contest.
-        
-        Args:
-            contest_id: The contest ID
-            problem_id: Optional problem ID to filter by
-        """
-        query = self.db.query(Submission).filter(
-            Submission.contest_id == contest_id,
-            Submission.is_contest_submission == True
-        )
-        if problem_id:
-            query = query.filter(Submission.problem_id == problem_id)
-        return query.all()
-
-    def list_submissions_for_problem_in_contest(self, problem_id: int, contest_id: int):
-        """List submissions for a specific problem within a specific contest."""
-        return self.db.query(Submission).filter(
-            Submission.problem_id == problem_id,
-            Submission.contest_id == contest_id,
-            Submission.is_contest_submission == True
-        ).all()
+    def list_submissions_for_problem(self, problem_id: int):
+        return self.db.query(Submission).filter(Submission.problem_id == problem_id).all()
 
     def list_all_submissions(self):
         return self.db.query(Submission).all()
@@ -407,3 +372,14 @@ class ProblemRepository:
 
     def get_editorial_by_id(self, editorial_id: int) -> Optional[Editorial]:
         return self.db.query(Editorial).filter(Editorial.id == editorial_id).first()
+
+    def list_submissions_for_contest(self, problem_ids: list[int], start_time: datetime, end_time: datetime):
+        """Get all submissions for a contest (filtered by problem IDs and time range)."""
+        return (
+            self.db.query(Submission)
+            .filter(Submission.problem_id.in_(problem_ids))
+            .filter(Submission.submission_time >= start_time)
+            .filter(Submission.submission_time <= end_time)
+            .order_by(Submission.submission_time.asc())
+            .all()
+        )
